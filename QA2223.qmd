@@ -1,0 +1,492 @@
+---
+title: "TLHC QA 22/23"
+format: 
+  html:
+     toc: true
+editor: source
+execute: 
+  echo: false
+  warning: false
+  
+---
+
+ 
+```{r}
+#This script performs some QA of the monthly TLHC data received for financial year 2022/2023
+#Note will need to have run update_names_tlhc.Rmd script first
+```
+
+```{r load libraries }
+#Load required libraries 
+library(data.table)
+library(tidyverse)
+library(zoo)
+library(openxlsx)
+library(scales)
+```
+
+```{r load data}
+#Load this months data (renamed and projects combined)
+data_latest_month<- fread("tlhc_midata_flatfile_2023-04-26_renamed_projects_combined.csv") %>%
+  mutate(value = replace_na(value, 0)) %>% #replace NA values with 0
+  mutate(month = as.yearmon(month))
+
+#Load last months data (renamed and projects combined)
+  data_previous_month<- fread("tlhc_midata_flatfile_2023-03-22_renamed_combined.csv") %>%
+  mutate(value = replace_na(value, 0)) %>% #replace NA values with 0
+  mutate(month = as.yearmon(month))
+
+#Path to QA check of CA and Project name updates. Will need to have first run update_names_tlhc.Rmd script 
+renaming_qa_check<- fread("tlhc_midata_flatfile_2023-04-26_qa_check_renamed.csv")
+
+#path to write output to
+path_to_write<- "./"
+```
+
+```{r latest and previous data months}
+
+#Find out what the most recent month of data is 
+latest_data_month<- data_latest_month %>%
+  mutate(month = as.yearmon(month)) %>% #Convert month to Zoo yearmon format
+  summarise(latest_month = max(month)) %>%
+  select(latest_month)
+
+latest_data_month<- latest_data_month[[1]]
+
+#Latest month in %b%y format 
+latest_month<- format(latest_data_month, "%b%y")
+
+#Calculate previous data month: Latest month minus 1 month in %b%y e.g. Jan23 format 
+previous_month<- format(as.yearmon(latest_data_month) - (1/12), "%b%y")
+```
+
+# Check Project and Cancer Alliance Names
+
+## Projects and Cancer Alliance Names Update This Month
+
+```{r check cancer alliance and project names have updated correctly}
+ knitr::kable(renaming_qa_check)
+```
+
+## Project names this month vs last month
+
+```{r compare project names to last month}
+#Look to see if there are any new projects this month or if there are any missing
+
+projects_previous<- data_previous_month %>%
+  distinct(CAName, Project) %>%
+  mutate(Project2 = Project)
+
+projects_current<- data_latest_month %>%
+  distinct(CAName, Project) %>%
+  mutate(Project2 = Project)
+
+project_colname_this_month<- paste0("Project", latest_month) #so can select dynamic variable that includes month name 
+project_colname_last_month<- paste0("Project", previous_month)
+ca_colname_this_month<- paste0("CAName", latest_month) #so can select dynamic variable that includes month name 
+ca_colname_last_month<- paste0("CAName", previous_month)
+
+project_names_vs_last_month<- full_join(projects_previous, projects_current, by="Project2", suffix=c(previous_month, latest_month)) %>%
+  select(!!project_colname_last_month, !!project_colname_this_month, !!ca_colname_last_month, !!ca_colname_this_month)
+
+knitr::kable(project_names_vs_last_month)
+```
+
+# Data Latest Month vs Previous Month
+
+Look at differences in this months vs last months data for select metrics (first invites, tlhc, total ct scan, cancers diagnosed)
+
+```{r key metrics}
+#Group together metrics to calculate key metrics and filter for those key metrics
+filter_key_metrics_function<- function(x){
+  x %>%
+   mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a face to face Lung Health Check Appointment"
+                                      ,"Number of patients who attended a telephone Lung Health Check Appointment")==TRUE, "Number of patients who attended a Lung Health Check Appointment", Metric)) %>%
+  
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who have had an initial LDCT scan performed"
+                                      ,"Number of patients who have had a 3 month follow up LDCT scan performed"
+                                      , "Number of patients who have had a 12 month follow up LDCT scan performed"
+                                      , "Number of patients who have had a 24 month follow up LDCT scan performed"
+                                      , "Number of patients who have had a 48 month surveillance LDCT scan performed")==TRUE,"Total number of CT scans performed", Metric)) %>%
+  
+    mutate(Metric = ifelse(Metric %in% c("Number of patients with a Lung Cancer diagnosed at stage 1"
+                                       , "Number of patients with a Lung Cancer diagnosed at stage 2"
+                                       , "Number of patients with a Lung Cancer diagnosed at stage 3"
+                                       , "Number of patients with a Lung Cancer diagnosed at stage 4"
+                                       , "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged")== TRUE, "Total number of lung cancers diagnosed", Metric)) %>%
+#Filter to select only key metrics   
+  filter(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites",
+                       "Number of patients who attended a Lung Health Check Appointment",
+                       "Total number of CT scans performed",
+                       "Total number of lung cancers diagnosed")) %>%
+#Summarise   
+  group_by(month, Metric, CAName, Project) %>%
+  summarise('value' = sum(value, na.rm=TRUE)) %>%
+    ungroup()
+}
+
+#Apply key metrics function to latest month of data
+key_metrics_latest_month<- filter_key_metrics_function(data_latest_month)
+
+#Apply key metrics function to previous month of data 
+key_metrics_previous_month<- filter_key_metrics_function(data_previous_month)
+```
+
+```{r diff this month vs previous month}
+#Calculate the difference in key metrics by project between latest data month and previous data month
+key_metrics_diffs<- key_metrics_latest_month %>%
+  left_join(key_metrics_previous_month, by=c("Metric", "CAName", "Project", "month"), suffix=c(latest_month, previous_month)) %>%
+  mutate("previous" = (!!as.name(paste0("value",previous_month)))) %>% #When join data latest month of data not in last months - will be NAs. Want to replace these with 0s 
+  mutate(previous = replace_na(previous, 0)) %>% 
+  mutate("latest" = (!!as.name(paste0("value",latest_month)))) %>% #When join data latest month of data not in last months - will be NAs. Want to replace these with 0s 
+  mutate(latest = replace_na(latest, 0)) %>% 
+  mutate(diff = latest - previous) %>% #this month - last month to show increase since last month
+  select(Metric, CAName, Project, diff, month) %>%
+  pivot_wider(names_from = month, values_from = diff) 
+```
+
+## Diffs this month vs previous month   
+```{r split key metrics difference by metric}
+#Create a list of key metric differences latest month vs previous month, 1x dataframe for each key metric
+diffs_by_key_metric<- key_metrics_diffs %>%
+  split(.$Metric)
+```
+
+::: {.panel-tabset}
+## Fist Invites 
+```{r}
+knitr::kable(diffs_by_key_metric$`Number of people invited to a Targeted Lung Health Check - first invites`)
+```
+
+## LHC
+```{r}
+knitr::kable(diffs_by_key_metric$`Number of patients who attended a Lung Health Check Appointment`)
+```
+
+## Scans
+```{r}
+knitr::kable(diffs_by_key_metric$`Total number of CT scans performed`)
+```
+
+## Lung Cancers Diagnosed 
+```{r}
+knitr::kable(diffs_by_key_metric$`Total number of CT scans performed`)
+```
+:::
+
+## Negative historical data vs previous month
+```{r negative historical data}
+#Look at any instances where difference vs last month is negative, could indicate missing/low data 
+negative_historical_data_function<- function(x){
+  x %>%
+      filter_if(is.integer, any_vars(. < 0)) %>% #filter if difference is less than 0 i.e. fewer this month than previous
+  arrange(Project) 
+  }
+
+negative_historical_data<- map(diffs_by_key_metric, negative_historical_data_function)
+```
+::: {.panel-tabset}
+## First Invites 
+
+```{r}
+knitr::kable(negative_historical_data$`Number of people invited to a Targeted Lung Health Check - first invites`)
+```
+
+## LHC 
+
+```{r}
+knitr::kable(negative_historical_data$`Number of patients who attended a Lung Health Check Appointment`)
+```
+
+## Scans 
+
+```{r}
+knitr::kable(negative_historical_data$`Total number of CT scans performed`)
+```
+
+## Lung Cancers Diagnosed 
+
+```{r}
+knitr::kable(negative_historical_data$`Total number of lung cancers diagnosed`)
+```
+:::
+
+```{r write differences latest vs previous month to csv}
+
+invites_tab_name<- paste0("invites_", latest_month, "_vs_", previous_month)
+lhc_tab_name<- paste0("lhc", latest_month, "_vs_", previous_month) 
+ct_tab_name<- paste0("ct", latest_month, "_vs_", previous_month)  
+cancers_tab_name<- paste0("cancers_diagnosed", latest_month, "_vs_", previous_month)
+
+list_of_tables<- list( invites_tab_name= diffs_by_key_metric$`Number of people invited to a Targeted Lung Health Check - first invites`
+                      , lhc_tab_name  = diffs_by_key_metric$`Number of patients who attended a Lung Health Check Appointment` 
+                      , ct_tab_name = diffs_by_key_metric$`Total number of CT scans performed`
+                      , cancers_tab_name = diffs_by_key_metric$`Total number of lung cancers diagnosed`)
+
+
+write.xlsx(list_of_tables, file = paste0(path_to_write, latest_month, "_vs_", previous_month, ".xlsx"))
+```
+
+# Actual vs Trajectories: By Project
+
+```{r read trajectories}
+invites<- fread("./Trajectories/Invites_overview.csv") %>%
+  mutate(Metric = "Number of people invited to a Targeted Lung Health Check - first invites")
+
+lhcs<- fread("./Trajectories/LHCs_overview.csv") %>%
+  mutate(Metric = "Number of patients who attended a Lung Health Check Appointment")
+
+scans<- fread("./Trajectories/Scans_overview.csv") %>%
+    mutate(Metric = "Total number of CT scans performed") 
+
+trajectories_2223<- rbind(invites, lhcs, scans)
+```
+
+```{r actual numbers invites lhcs scans}
+actual_2223<- key_metrics_latest_month %>%
+    filter(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites",
+                       "Number of patients who attended a Lung Health Check Appointment",
+                       "Total number of CT scans performed")) %>%
+  filter(month >= "Apr 2022" & month <="Mar 2023") 
+```
+
+```{r trajectories long}
+trajectories_2223_long<- trajectories_2223 %>%
+  select(Site, Metric, 7:ncol(.)) %>%
+  pivot_longer(!c(Site, Metric), names_to = "month", values_to = "trajectory") %>%
+  mutate(month = as.yearmon(month, "%d/%m/%Y")) %>%
+  arrange(Metric, Site, month) 
+```
+
+```{r combine trajectories and actual 22-23}
+#Combine 22/23 trajectories and actual. Calculate difference between cumulative counts and cumulative trajectories 
+
+diff_actual_traj<- full_join(trajectories_2223_long, actual_2223, by=c("Site"="Project", "month"="month", "Metric"="Metric")) %>%
+  mutate(value = replace_na(value, 0)) %>%
+  arrange(Metric, Site, month) %>%
+  group_by(Metric, Site) %>%
+  mutate(cum_trajectory = cumsum(trajectory),
+         cum_actual = cumsum(value)) %>%
+  mutate(n_diff_vs_traj = cum_actual - cum_trajectory) 
+```
+
+```{r n diff trajectories vs actual plots, fig.width=12, fig.height=8}
+
+plot_n_diff_actual_traj<- diff_actual_traj %>%
+  #filter(Site != "North Central London") %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  ggplot(., aes(x=factor(month), y=fct_rev(Site), fill=n_diff_vs_traj))+
+  geom_tile()+
+  scale_fill_gradient2(low="darkred", mid="white", high="darkgreen", midpoint=0)+
+  theme_bw()+
+  labs(x=element_blank(), y=element_blank(), title = "ndiff cumulative actual vs cumulative trajectories 22/23")+
+  #theme(legend.position = "bottom")+
+  facet_wrap(~Metric)+
+  theme(axis.text.x = element_text(angle = 90))
+
+plot_n_diff_actual_traj  
+```
+
+```{r prop diff trajectories vs actual plots, fig.width=12, fig.height=8}
+
+prop_n_diff_actual_traj<- diff_actual_traj %>%
+  mutate(prop_actual_vs_traj = cum_actual/cum_trajectory) %>%
+  mutate(prop_actual_vs_traj = ifelse(cum_trajectory == 0 & cum_actual == 0, 1, prop_actual_vs_traj)) %>% #If trajectory and actual are both 0, then 1
+  mutate(prop_actual_vs_traj = ifelse(cum_trajectory == 0 & cum_actual >0, 2, prop_actual_vs_traj)) %>% #To keep scale sensible if trajectory is 0 but actual >0 then 2 
+  #filter(Site != "North Central London") %>%
+  #filter(Site != "Southampton") %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  ggplot(., aes(x=factor(month), y=fct_rev(Site), fill=prop_actual_vs_traj))+
+  geom_tile()+
+  scale_fill_gradient2(low="darkred", mid="white", high="darkgreen", midpoint=1)+
+  theme_bw()+
+  labs(x=element_blank(), y=element_blank(), title = "percentage difference cumulative actual vs cumulative trajectories 22/23")+
+  #theme(legend.position = "bottom")+
+  facet_wrap(~Metric)+
+  theme(axis.text.x = element_text(angle = 90))
+
+prop_n_diff_actual_traj  
+```
+
+### LHCs
+
+### Projects listed by lowest to highest proportion of cumulative LHC trajectory achieved up to latest month of data for fy22/23 
+```{r lhc proportion of trajectory table}
+lhc_by_prop_trajectory<- diff_actual_traj %>%
+  mutate(prop_actual_vs_traj = cum_actual/cum_trajectory) %>%
+  mutate(prop_actual_vs_traj = ifelse(cum_trajectory == 0 & cum_actual == 0, 1, prop_actual_vs_traj)) %>% #If trajectory and actual are both 0, then 1
+  mutate(prop_actual_vs_traj = ifelse(cum_trajectory == 0 & cum_actual >0, 2, prop_actual_vs_traj)) %>% #To keep scale sensible if trajectory is 0 but actual >0 then 2 
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  filter(Metric == "Lung Health Checks") %>%
+  filter(month == "Feb 2023") %>%
+  arrange(prop_actual_vs_traj) %>%
+  filter(cum_actual > 0) %>% #only projects that have data for
+  select(CAName, Site, cum_trajectory, cum_actual, prop_actual_vs_traj)
+
+knitr::kable(lhc_by_prop_trajectory)
+```
+
+### Scans 
+### Projects listed by lowest to highest proportion of cumulative CT scans trajectory achieved up to latest month of data for fy22/23 
+```{r}
+ct_by_prop_trajectory<- diff_actual_traj %>%
+  mutate(prop_actual_vs_traj = cum_actual/cum_trajectory) %>%
+  mutate(prop_actual_vs_traj = ifelse(cum_trajectory == 0 & cum_actual == 0, 1, prop_actual_vs_traj)) %>% #If trajectory and actual are both 0, then 1
+  mutate(prop_actual_vs_traj = ifelse(cum_trajectory == 0 & cum_actual >0, 2, prop_actual_vs_traj)) %>% #To keep scale sensible if trajectory is 0 but actual >0 then 2 
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  filter(Metric == "Scans") %>%
+  filter(month == "Feb 2023") %>%
+  arrange(prop_actual_vs_traj) %>%
+  filter(cum_actual > 0) %>% #only projects that have data for
+  select(CAName, Site, cum_trajectory, cum_actual, prop_actual_vs_traj)
+
+knitr::kable(ct_by_prop_trajectory)
+```
+
+# Actual vs Trajectories: By Cancer Alliance
+
+```{r}
+#Cancer alliance lookup 
+ca_project_ca_lookup<- fread("TLHC_names_lookup.csv") %>%
+  mutate(`Cancer Alliance` = str_remove(`Cancer Alliance`, " Cancer Alliance"))
+
+#Projects that actually receiving data for 
+projects_with_data<- data_latest_month %>%
+  filter(Metric == "Number of people invited to a Targeted Lung Health Check - first invites") %>%
+  filter(value > 0) %>%
+  distinct(Project) %>%
+  arrange(Project)
+```
+
+```{r ca actual vs trajectory heatmap plot, fig.width=10, fig.height=6}
+#Trajectory up to latest month of data by cancer alliance for all cancer alliances including those that don't yet have data for
+diff_actual_traj %>%
+  filter(month == latest_data_month) %>%
+  left_join(ca_project_ca_lookup, by=c("Site"="Project")) %>%
+  group_by(`Cancer Alliance`, Metric, month) %>%
+  summarise(cum_trajectory = sum(cum_trajectory), cum_actual = sum(cum_actual)) %>%
+  mutate(pc_diff = cum_actual/cum_trajectory) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  #filter(month == max(actual_2223$month)) %>%
+  mutate(label = scales::percent(pc_diff)) %>%
+  mutate(label = ifelse(str_detect(label, "Inf") == TRUE, "", label)) %>% #Rename Inf for when don't have trajectory but have data 
+  ggplot(., aes(x=factor(month), y=fct_rev(`Cancer Alliance`), fill=pc_diff))+
+  geom_tile()+
+  scale_fill_gradient2(low="#40004b", mid="white", high="#00441b", na.value="darkgrey", midpoint=1, name="Percentage of Trajectory", labels=percent)+
+  theme_bw()+
+  labs(x=element_blank(), y=element_blank(), size=18)+
+  facet_wrap(~Metric)+
+  #theme(axis.text.x = element_text(angle = 90), plot.title = element_text(hjust = 0.5))+
+  labs(title = "Cumulative Invites, Lung Health Checks, and Scans Performed \nas a Percentage of Cumulative Monthly Trajectories \nup to most recent month of data in 2022/2023")+
+  geom_text(aes(label=label))+
+  theme(axis.ticks = element_blank())+
+  scale_x_discrete(labels=c(paste0("April 2022 - ", format(latest_data_month, "%B %Y")), paste0("April 2022 - ", format(latest_data_month, "%B %Y")), paste0("April 2022 - ", format(latest_data_month, "%B %Y"))))
+
+```
+
+```{r ca_actual vs trajectory save plot}
+tiff("ca_pcdiff_this_month.tiff", units="in", width=12, height=7, res=300)
+
+#Trajectory up to latest month of data by cancer alliance for all cancer alliances including those that don't yet have data for
+diff_actual_traj %>%
+  filter(month == latest_data_month) %>%
+  left_join(ca_project_ca_lookup, by=c("Site"="Project")) %>%
+  group_by(`Cancer Alliance`, Metric, month) %>%
+  summarise(cum_trajectory = sum(cum_trajectory), cum_actual = sum(cum_actual)) %>%
+  mutate(pc_diff = cum_actual/cum_trajectory) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  #filter(month == max(actual_2223$month)) %>%
+  mutate(label = scales::percent(pc_diff)) %>%
+  mutate(label = ifelse(str_detect(label, "Inf") == TRUE, "", label)) %>% #Rename Inf for when don't have trajectory but have data 
+  ggplot(., aes(x=factor(month), y=fct_rev(`Cancer Alliance`), fill=pc_diff))+
+  geom_tile()+
+  scale_fill_gradient2(low="#40004b", mid="white", high="#00441b", na.value="darkgrey", midpoint=1, name="Percentage of Trajectory", labels=percent)+
+  theme_bw()+
+  labs(x=element_blank(), y=element_blank(), size=18)+
+  facet_wrap(~Metric)+
+  #theme(axis.text.x = element_text(angle = 90), plot.title = element_text(hjust = 0.5))+
+  #labs(title = "Cumulative Invites, Lung Health Checks, and Scans Performed \nas a Percentage of Cumulative Monthly Trajectories \nup to Feb 2023 in 2022/2023")+
+  geom_text(aes(label=label))+
+  theme(axis.ticks = element_blank())+
+  scale_x_discrete(labels=c("April 2022 - February 2023", "April 2022 - February 2023", "April 2022 - February 2023"))
+
+dev.off()
+```
+
+```{r ca_actual vs trajectory live sites, fig.width=10, fig.height=6}
+#Now make the same plot but only include trajectories for those projects that have been receiving data for 
+diff_actual_traj %>%
+  filter(Site %in% projects_with_data$Project) %>% #Only include sites that have started submitting data
+  filter(month == latest_data_month) %>%
+  left_join(ca_project_ca_lookup, by=c("Site"="Project")) %>%
+  group_by(`Cancer Alliance`, Metric, month) %>%
+  summarise(cum_trajectory = sum(cum_trajectory), cum_actual = sum(cum_actual)) %>%
+  mutate(pc_diff = cum_actual/cum_trajectory) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  #mutate(pc_diff = ifelse(str_detect(pc_diff, "Inf") == TRUE, "1.10", pc_diff)) %>% #Sub 110% for Inf as shows it's green ie above trajectory 
+  mutate(label = scales::percent(pc_diff)) %>%
+  mutate(label = ifelse(str_detect(label, "Inf") == TRUE, "", label)) %>% #Rename Inf for when don't have trajectory but have data 
+  
+  ggplot(., aes(x=factor(month), y=fct_rev(`Cancer Alliance`), fill=pc_diff))+
+  geom_tile()+
+  scale_fill_gradient2(low="#40004b", mid="white", high="#00441b", na.value="darkgrey", midpoint=1, name="Percentage of Trajectory", labels=percent)+
+  theme_bw()+
+  labs(x=element_blank(), y=element_blank(), size=18)+
+  facet_wrap(~Metric)+
+  #theme(axis.text.x = element_text(angle = 90), plot.title = element_text(hjust = 0.5))+
+  labs(title = "Cumulative Invites, Lung Health Checks, and Scans Performed \nas a Percentage of Cumulative Monthly Trajectories \nup to most recent month of data in fy2022/2023")+
+  geom_text(aes(label=label))+
+  theme(axis.ticks = element_blank())+
+ # scale_x_discrete(labels=c("April 2022 - February 2023", "April 2022 - February 2023", "April 2022 - February 2023"))
+  scale_x_discrete(labels=c(paste0("April 2022 - ", format(latest_data_month, "%B %Y")), paste0("April 2022 - ", format(latest_data_month, "%B %Y")), paste0("April 2022 - ", format(latest_data_month, "%B %Y"))))
+
+```
+
+```{r ca actual vs trajectory live sites save plot}
+#Now make the same plot but only include trajectories for those projects that have been receiving data for 
+tiff("ca_pcdiff_this_month_live_only.tiff", units="in", width=12, height=7, res=300)
+
+
+diff_actual_traj %>%
+  filter(Site %in% projects_with_data$Project) %>% #Only include sites that have started submitting data
+  filter(month == latest_data_month) %>%
+  left_join(ca_project_ca_lookup, by=c("Site"="Project")) %>%
+  group_by(`Cancer Alliance`, Metric, month) %>%
+  summarise(cum_trajectory = sum(cum_trajectory), cum_actual = sum(cum_actual)) %>%
+  mutate(pc_diff = cum_actual/cum_trajectory) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of people invited to a Targeted Lung Health Check - first invites")==TRUE, "Invites", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a Lung Health Check Appointment")==TRUE, "Lung Health Checks", Metric)) %>%
+  mutate(Metric = ifelse(Metric %in% c("Total number of CT scans performed")==TRUE, "Scans", Metric)) %>%
+  #mutate(pc_diff = ifelse(str_detect(pc_diff, "Inf") == TRUE, "1.10", pc_diff)) %>% #Sub 110% for Inf as shows it's green ie above trajectory 
+  mutate(label = scales::percent(pc_diff)) %>%
+  mutate(label = ifelse(str_detect(label, "Inf") == TRUE, "", label)) %>% #Rename Inf for when don't have trajectory but have data 
+  
+  ggplot(., aes(x=factor(month), y=fct_rev(`Cancer Alliance`), fill=pc_diff))+
+  geom_tile()+
+  scale_fill_gradient2(low="#40004b", mid="white", high="#00441b", na.value="darkgrey", midpoint=1, name="Percentage of Trajectory", labels=percent)+
+  theme_bw()+
+  labs(x=element_blank(), y=element_blank(), size=18)+
+  facet_wrap(~Metric)+
+  #theme(axis.text.x = element_text(angle = 90), plot.title = element_text(hjust = 0.5))+
+  #labs(title = "Cumulative Invites, Lung Health Checks, and Scans Performed \nas a Percentage of Cumulative Monthly Trajectories \nup to Feb 2023 in 2022/2023")+
+  geom_text(aes(label=label))+
+  theme(axis.ticks = element_blank())+
+ # scale_x_discrete(labels=c("April 2022 - February 2023", "April 2022 - February 2023", "April 2022 - February 2023"))
+  scale_x_discrete(labels=c(paste0("April 2022 - ", format(latest_data_month, "%B %Y")), paste0("April 2022 - ", format(latest_data_month, "%B %Y")), paste0("April 2022 - ", format(latest_data_month, "%B %Y"))))
+
+dev.off()
+```
