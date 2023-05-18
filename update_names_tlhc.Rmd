@@ -1,0 +1,164 @@
+---
+title: "TLHC - update names"
+output: html_document
+date: "2023-01-30"
+author: "Louise Reynolds"
+---
+ 
+Every month we receive a long format file containing metrics and data for the targeted lung health checks. Project and cancer alliance names in this file don't always exactly match project and cancer alliance names used elsewhere, project names may also get updated. This script updates project and cancer alliance names and writes an updated version of the monthly long format file received from Midlands and Lancs CSU.
+
+```{r load required libraries}
+library(data.table)
+library(tidyverse)
+```
+
+```{r path to long file}
+#File path to the tlhc long format csv file that receive from CSU
+path_to_tlhc_long<- "tlhc_midata_flatfile_2023-04-26.csv"
+```
+
+```{r read long file}
+long_tlhc<- fread(path_to_tlhc_long)
+```
+
+```{r field names}
+#Field names aren't always the same in each months flatfile - may need to rename fields so doesn't affect downstream changes 
+long_tlhc %>%
+  select(!any_of(c("CACode", "CAName", "ProjectCode", "Project", "MetricId", "Metric", "month", "value"))) #Select any columns that are present but not as expected
+```
+
+```{r rename field names if necessary}
+#Rename any fields that are not named as expected 
+long_tlhc<- long_tlhc %>%
+  rename("value"="Numerator")
+```
+
+```{r convert to lowercase}
+#Will need to check names in file vs what names should be. 
+#Convert cancer alliance and project names to lowercase to make name matching easier
+df<- long_tlhc %>%
+  mutate(CAName_lc = str_to_lower(CAName)) %>% #convert all cancer alliance names to lowercase to avoid case issues when matching 
+  mutate(Project_lc = str_to_lower(Project)) %>% #convert all project names to lowercase to avoid case issues when matching 
+  mutate(project_name = NA) %>% #create new field for updated project names to go into
+  mutate(ca_name = NA)
+```
+
+```{r Update CA names}
+#Update cancer alliance names to how want them to appear for reporting. Cancer alliance names shouldn't change very much. 
+
+update_ca_names_function<- function(x){
+  x %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("cheshire|merseyside"))==TRUE, "Cheshire and Merseyside", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("east"))==TRUE & str_detect(CAName_lc, c("midland"))==TRUE, "East Midlands", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("east of england"))==TRUE & str_detect(CAName_lc, c("north"))==TRUE , "East of England North", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("east of england"))==TRUE  & str_detect(CAName_lc, c("south"))==TRUE, "East of England South", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("manchester"))==TRUE, "Greater Manchester", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("humber"))==TRUE | str_detect(CAName_lc, c("north|n."))==TRUE & str_detect(CAName_lc, c("yorks"))==TRUE, "Humber and North Yorkshire", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("kent|medway"))==TRUE, "Kent and Medway", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("lancashire"))==TRUE | (str_detect(CAName_lc, c("south"))==TRUE & str_detect(CAName_lc, c("cumbria"))==TRUE), "Lancashire and South Cumbria", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("north"))==TRUE & str_detect(CAName_lc, c("central london"))==TRUE, "North Central London", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("north east"))==TRUE & str_detect(CAName_lc, c("london"))==TRUE , "North East London", ca_name)) %>%
+  mutate(ca_name = ifelse((str_detect(CAName_lc, c("north west|south west"))==TRUE & str_detect(CAName_lc, c("london"))==TRUE )| str_detect(CAName_lc, c("rm partners"))==TRUE , "North West and South West London", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("northern"))==TRUE, "Northern", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("peninsula"))==TRUE, "Peninsula", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("somerset|wiltshire|avon|gloucestershire"))==TRUE, "Somerset, Wiltshire, Avon, and Gloucestershire", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("south east"))==TRUE & str_detect(CAName_lc, c("london"))==TRUE, "South East London", ca_name)) %>%
+  #mutate(ca_name = ifelse(str_detect(CAName, c("south yorkshire and bassetlaw"))==TRUE, "South Yorkshire and Bassetlaw", CAName)) %>%
+  
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("south yorks|bassetlaw"))==TRUE, "South Yorkshire and Bassetlaw", ca_name)) %>%
+
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("surrey|sussex"))==TRUE, "Surrey and Sussex", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("thames"))==TRUE, "Thames Valley", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("wessex"))==TRUE, "Wessex", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("west"))==TRUE & str_detect(CAName_lc, c("midland"))==TRUE, "West Midlands", ca_name)) %>%
+  mutate(ca_name = ifelse(str_detect(CAName_lc, c("west yorks|harrogate"))==TRUE, "West Yorkshire and Harrogate", ca_name)) 
+}
+```
+
+```{r update project names, eval=TRUE}
+#Update project names to how want them to appear for reporting. 
+#Note that Sutton and Merton come through separately but should be combined into single project name 
+
+update_project_names_function<- function(x){
+  x %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("barnsley|rotherham|bassetlaw"))==TRUE,"Barnsley, Rotherham & Bassetlaw", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("solihull"))== TRUE | (str_detect(Project_lc, c("west|w.|w ")) != TRUE & str_detect(Project_lc, c("birmingham")))== TRUE , "Birmingham and Solihull", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("blackpool|blackburn|darwen"))==TRUE,"Blackburn with Darwen and Blackpool", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("bradford|craven"))==TRUE,"Bradford District and Craven", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("brighton|hove|hastings"))==TRUE,"Brighton & Hove and Hastings", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("cheshire|merseyside|knowsley|halton|liverpool"))==TRUE,"Cheshire and Merseyside", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("corby"))==TRUE,"Corby", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("coventry|warwick"))==TRUE,"Coventry and Warwickshire", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("crawley|slough"))==TRUE,"Crawley and Slough", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("doncaster"))==TRUE,"Doncaster", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("dorset"))==TRUE,"Dorset", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("lancashire|lancs")) == TRUE & str_detect(Project_lc, c("east|e.")) == TRUE ,"East Lancashire", project_name)) %>%
+
+  mutate(project_name = ifelse(str_detect(Project_lc, c("hammersmith|fulham"))==TRUE,"Hammersmith and Fulham", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("herts|hertfordshire"))== TRUE | (str_detect(Project_lc, c("west|w.|w "))== TRUE & str_detect(Project_lc, c("essex")))== TRUE ,"Herts and West Essex", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("hillingdon|hilingdon"))==TRUE,"Hillingdon", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("hull"))==TRUE & str_detect(Project_lc, c("solihull|birmingham"))==FALSE,"Hull", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("kernow"))==TRUE,"Kernow", project_name)) %>%
+      mutate(project_name = ifelse(str_detect(Project_lc, c("luton"))== TRUE | (str_detect(Project_lc, c("south|s.|s "))== TRUE & str_detect(Project_lc, c("beds|bedfordshire")))== TRUE ,"Luton and South Bedfordshire", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("manchester"))==TRUE,"Manchester", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("mansfield|ashfield"))==TRUE,"Mansfield and Ashfield", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("newcastle|gateshead"))==TRUE,"Newcastle Gateshead", project_name)) %>%
+  mutate(project_name = ifelse((str_detect(Project_lc, c("north central|nc"))== TRUE & str_detect(Project_lc, c("london"))== TRUE), "North Central London", project_name)) %>%
+  #mutate(project_name = ifelse((str_detect(Project, c("north east|ne|n.e."))== TRUE & str_detect(Project, c("essex"))== TRUE) | str_detect(Project, c("yarmouth"))==TRUE,"North East Essex and Great Yarmouth", project_name)) %>%
+   mutate(project_name = ifelse(str_detect(Project_lc, c("yarmouth"))==TRUE,"Great Yarmouth", project_name)) %>% #Only have Great Yarmouth data for now but could start getting for NEE in future
+  mutate(project_name = ifelse(str_detect(Project_lc, c("north east|ne|n.e."))== TRUE & str_detect(Project_lc, c("london"))== TRUE ,"North East London", project_name)) %>%
+
+  mutate(project_name = ifelse(str_detect(Project_lc, c("kirklees"))==TRUE,"North Kirklees", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("lincolnshire|lincs"))== TRUE & str_detect(Project_lc, c("north"))== TRUE,"North and North East Lincolnshire", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("nottingham"))==TRUE,"Nottingham City", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("portsmouth"))==TRUE,"Portsmouth", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("salford"))==TRUE,"Salford", project_name)) %>%
+    mutate(project_name = ifelse(str_detect(Project_lc, c("sandwell"))== TRUE | (str_detect(Project_lc, c("west|w.|w "))== TRUE & str_detect(Project_lc, c("birmingham")))== TRUE ,"Sandwell and West Birmingham", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("south east|s.e.|se"))== TRUE & str_detect(Project_lc, c("london"))== TRUE,"South East London", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("kent"))== TRUE,"South Kent Coast", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("southampton|soton"))==TRUE,"Southampton", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("southend"))==TRUE,"Southend", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("stoke"))==TRUE,"Stoke on Trent", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("sunderland"))== TRUE | str_detect(Project_lc, c("south"))== TRUE & str_detect(Project_lc, c("tyneside"))==TRUE,"Sunderland & South Tyneside", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("sutton|merton"))== TRUE,"Sutton and Merton", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("swag|somerset|wiltshire|avon|gloucestershire"))==TRUE,"SWAG", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("swindon"))==TRUE,"Swindon (Bsw)", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("tameside|glossop"))==TRUE,"Tameside and Glossop", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("tees"))==TRUE,"Tees Valley", project_name)) %>%
+  mutate(project_name = ifelse(str_detect(Project_lc, c("thurrock"))==TRUE,"Thurrock", project_name)) 
+}
+```
+
+```{r apply update names functions}
+#Apply functions to update CA and Project names. Some projects should be combined e.g. Sutton and Merton currently come through separately but should be reported as "Sutton and Merton" - will need to recalculate values for these combined projects
+#Get dataframe ready for saving as csv
+renamed_df<- df %>%
+  update_ca_names_function(.) %>% #Apply update cancer alliance names function
+  update_project_names_function(.) %>% #Apply update project names function
+  group_by(ca_name, project_name, MetricId, Metric, month) %>% #Group by updated project names 
+  summarise(value = sum(value, na.rm=TRUE)) %>% #Summarise values for renamed projects
+  rename("CAName" = ca_name) %>% #Rename updated ca name column
+  rename("Project" = project_name)
+
+```
+
+```{r names check df}
+#For QA purposes will want to check that ca and project names have been updated as expected. So apply functions to names and create a dataframe showing before and after functions applied. Write as csv 
+
+names_update_check<- df %>%
+  distinct(CAName, Project, CAName_lc, Project_lc, project_name, ca_name) %>% #distinct cancer alliance and project names in original file
+  update_ca_names_function(.) %>% #apply update ca name function
+  update_project_names_function(.) %>% #apply update project name function
+  rename("original_ca_name" = CAName, "original_project_name" = Project, "updated_ca_name" = ca_name, "updated_project_name" = project_name) %>%
+  select(original_ca_name, updated_ca_name, original_project_name, updated_project_name) %>%
+  arrange(updated_ca_name, updated_project_name)
+```
+
+```{r write to csv}
+#Write renamed and projects combined df to csv
+fwrite(renamed_df, file = paste0(str_remove(path_to_tlhc_long, ".csv"), "_renamed_projects_combined.csv"), row.names = FALSE, sep = ",")
+
+#Write QA check dataframe to csv 
+fwrite(names_update_check, file = paste0(str_remove(path_to_tlhc_long, ".csv"), "_qa_check_renamed.csv"), row.names = FALSE, sep = ",")
+```
+
