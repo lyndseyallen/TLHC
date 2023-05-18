@@ -1,0 +1,1458 @@
+---
+title: "Untitled"
+output: html_document
+---
+ 
+This script outputs TLHC CA packs for each cancer alliance
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "./") #set working directory for whole file 
+```
+
+```{r Load required packages if necessary, eval=FALSE}
+if(!require("tidyverse")) install.packages('tidyverse')
+if(!require("knitr")) install.packages('knitr') 
+if(!require("xlsx")) install.packages('xlsx')
+if(!require("openxlsx")) install.packages('openxlsx')
+if(!require("flextable")) install.packages('flextable')
+if(!require("officer")) install.packages('officer')
+if(!require("sparkline")) install.packages('sparkline')
+if(!require("ggthemes")) install.packages('ggthemes')
+if(!require("plotly")) install.packages('plotly')
+if(!require("readxl")) install.packages('readxl')
+if(!require("janitor")) install.packages('janitor')
+if(!require("lubridate")) install.packages('lubridate')
+if(!require("scales")) install.packages('scales')
+if(!require("rvg")) install.packages('rvg')
+if(!require("ggrepel")) install.packages('ggrepel')
+if(!require("data.table")) install.packages('data.table')
+if(!require("zoo")) install.packages('zoo')
+```
+
+```{r load required libraries}
+library(tidyverse)
+library(knitr)
+library(openxlsx)
+library(flextable)
+library(officer)
+library(ggthemes)
+library(plotly)
+library(readxl)
+library(janitor)
+library(lubridate)
+library(scales)
+library(rvg)
+library(ggrepel)
+#library(xlsx) fail 
+library(data.table)
+library(zoo)
+```
+
+```{r Clear current environment }
+rm(list=ls())
+```
+
+```{r make new directory}
+#Make new directory to save the cancer alliance powerpoint presentations in 
+dir_name_ca_pack<- paste0("./May 2023")
+dir.create(dir_name_ca_pack)
+```
+
+
+Trajectories 
+```{r trajectories - load and transpose invites}
+#Load trajectories: Invites
+Trajectory_2223_i <- fread("./Trajectories/Invites_overview.csv") %>%
+  rename(Project = Site)
+
+#Wide to long: Invites - convert to long format so that months are a single field 
+Trajectory_2223_it <- pivot_longer(Trajectory_2223_i,
+                                   cols = contains("202"),
+                                   names_to = "month",
+                                   values_to = "trajectory")
+```
+
+```{r trajectories - load and transpose LHCs}
+#Load trajectories: LHCs
+Trajectory_2223_l <- fread("./Trajectories/LHCs_overview.csv") %>%
+  rename(Project = Site) 
+
+#Wide to long: LHCs - convert to long format so that months are a single field 
+Trajectory_2223_lt <- pivot_longer(Trajectory_2223_l,
+                                   cols = contains("202"),
+                                   names_to = "month",
+                                   values_to = "trajectory")
+```
+
+```{r trajectories - load and transpose scans}
+#Load trajectories: Scans
+Trajectory_2223_s <- fread("./Trajectories/Scans_overview.csv") %>%
+  rename(Project = Site)
+
+#Wide to long: scans - convert to long format so that months are a single field 
+Trajectory_2223_st <- pivot_longer(Trajectory_2223_s,
+                                   cols = contains("202"),
+                                   names_to = "month",
+                                   values_to = "trajectory")
+```
+
+```{r trajectories - bind and arrange}
+#Bind & Arrange
+Trajectory_2223 <-  
+  rbind(Trajectory_2223_it,
+        Trajectory_2223_lt,
+        Trajectory_2223_st) %>%
+  arrange(match(Metric, c("Number of people invited to a Targeted Lung Health Check - first invites",
+                          "Number of patients who attended a Lung Health Check Appointment",
+                          "Total number of CT scans performed")),
+          month) %>%
+  select(-Phase) %>%
+  mutate(Metric = str_replace(Metric, "Number of people invited to a Targeted Lung Health Check", "Number of people invited to a Targeted Lung Health Check - first invites"))
+
+#Trajectory_2223$month<- as.character(as.yearmon(Trajectory_2223$month, "%d/%m/%Y"))
+Trajectory_2223$month<- as.yearmon(Trajectory_2223$month, "%d/%m/%Y")
+```
+
+Datasets 
+```{r load datasets}
+
+TLHC_Load <- fread("tlhc_midata_flatfile_2023-04-26_renamed_projects_combined.csv") #long format monthly tlhc metrics file
+
+TLHC_Load<- TLHC_Load 
+
+TLHC_Phases <- fread("TLHC_Phases.csv") 
+
+#CA_Rank <- fread("CA_Rank.csv")
+CA_Rank <- TLHC_Load %>%
+  distinct(CAName) %>%
+  mutate("Rank"= seq.int(nrow(.)))
+```
+
+```{r Combine projects in 2 Coventry and Lancashire sites}
+TLHC_Load_cov <- TLHC_Load %>%
+  #mutate(Project = str_replace(Project, "Coventry and Rugby CCG", "Coventry and Warwickshire CCG")) %>% #Group 2x Coventry sites together
+  #mutate(Project = str_replace_all(Project, c("Blackburn with Darwen CCG" = "Blackburn with Darwen and Blackpool", "Blackpool CCG" = "Blackburn with Darwen and Blackpool"))) %>% #Group 2x Lancashire sites together into "Blackburn with Darwen and Blackpool" 
+  group_by(month, Metric, CAName, Project) %>%
+  summarise('value1' = sum(value))
+```
+```{r Add phase column}
+#Add phase column showing which phase of the project a site is in (1,2,3)
+TLHC_load_uncomb <-
+  left_join(TLHC_Load_cov,
+            TLHC_Phases,
+            by = "Project") %>%
+  rename("CAName"= "CAName.x")
+```
+
+
+```{r Replace uncombined metrics}
+#Group and aggregate some of the metrics together to produce fewer categories. (Number of patients attending LHC appointment, total number of CT scans performed, number of patients who did not attend LHC appointment, total number of lung cancers diagnosed, total number of follow-up scans performed). 
+
+TLHC_Load_comb <- TLHC_load_uncomb %>%
+  
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who attended a face to face Lung Health Check Appointment"
+                                      ,"Number of patients who attended a telephone Lung Health Check Appointment")==TRUE, "Number of patients who attended a Lung Health Check Appointment", Metric)) %>%
+  
+    mutate(Metric = ifelse(Metric %in% c("Number of patients who did not attend a face to face Lung Health Check Appointment"
+                                      ,"Number of patients who did not attend a telephone Lung Health Check Appointment")==TRUE,"Number of patients who did not attend a Lung Health Check Appointment", Metric)) %>%
+  
+  mutate(Metric = ifelse(Metric %in% c("Number of patients with a Lung Cancer diagnosed at stage 1"
+                                       , "Number of patients with a Lung Cancer diagnosed at stage 2"
+                                       , "Number of patients with a Lung Cancer diagnosed at stage 3"
+                                       , "Number of patients with a Lung Cancer diagnosed at stage 4"
+                                       , "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged")== TRUE, "Total number of lung cancers diagnosed", Metric)) %>%
+  
+  
+  mutate(Metric = ifelse(Metric %in% c("Number of patients who have had an initial LDCT scan performed"
+                                      ,"Number of patients who have had a 3 month follow up LDCT scan performed"
+                                      , "Number of patients who have had a 12 month follow up LDCT scan performed"
+                                      , "Number of patients who have had a 24 month follow up LDCT scan performed"
+                                      , "Number of patients who have had a 48 month surveillance LDCT scan performed")==TRUE,"Total number of CT scans performed", Metric)) %>%
+  group_by(month, Metric, CAName, Project, Phase) %>%
+  summarise('value2' = sum(value1, na.rm=TRUE))
+```
+
+```{r format months and dates}
+# Month
+TLHC_Load$month<- as.yearmon(TLHC_Load$month)
+
+vWdate_format<- max(TLHC_Load$month) #most recent date in 'mon YYYY' format 
+
+vWdate_format6<- vWdate_format - (5/12) #5 months prior to most recent date in month year format 
+
+vWdate_format2<- vWdate_format + (2/12) # 2 months after most recent date in month year format 
+```
+
+```{r Slide 5 - table site phase date live}
+#start_dates <- read.csv("TLHC_start_dates.csv") %>%
+#  select("Project", "Phase", "CAName")
+
+#Join CA rank to start dates 
+dates_join <- left_join(TLHC_Phases, CA_Rank, by="CAName")
+
+#function
+start_dates.table <- function(t) {
+  start_fn <- dates_join %>%
+    filter(Rank == t) %>% 
+    select(-Rank, -CAName)
+  
+  ft_start_2223 <-flextable(start_fn)
+  #Bold CA & Project Name & Proportions Columns
+  ft_start_2223 <- bold(ft_start_2223, i = NULL, j = "Project", bold = TRUE, part = "all")
+  #Bold Header
+  ft_start_2223 <- bold(ft_start_2223, i = 1, j = NULL, bold = TRUE, part = "header")
+  #Center the text 
+  ft_start_2223 <- align(ft_start_2223, i = NULL, j = 2, align = "center", part = "all")
+  #Font
+  ft_start_2223 <- font(ft_start_2223, fontname = "Arial", part = "all")
+  ft_start_2223 <- fontsize(ft_start_2223, size = 9, part = "all")
+  #Adjust column widths
+  ft_start_2223 <- width(ft_start_2223, j = 1, width = 8, unit = "cm")
+  #Add gridlines
+  ft_start_2223 <- border_outer(ft_start_2223)
+  ft_start_2223 <- border_inner_h(ft_start_2223)
+  ft_start_2223 <- border_inner_v(ft_start_2223)
+  #Change header labels
+  ft_start_2223 <- set_header_labels(ft_start_2223,
+                                     Project = "Site",
+                                     Phase = "Phase",
+                                     values = NULL)
+  
+}
+
+print(start_dates.table(1)) #Prints start dates for project sites ranked 1 (Cheshire and Merseyside)
+```
+
+```{r Slide 6 - table - phase data quality comments }
+#comment_dates <- read.csv("C:\\Users\\Charlotte.Graham\\Documents\\TLHCR\\TLHC_start_dates.csv") %>%
+comment_dates <- fread("TLHC_start_dates.csv") %>%
+  select("Project", "Phase", "CAName", "DQ_Comments")
+
+#Join CA rank
+comments_join <- left_join(comment_dates, CA_Rank, by = "CAName")
+
+#function
+comments.table <- function(t) {
+  comments_fn <- comments_join %>%
+    filter(Rank == t) %>%
+    select(-Rank, -CAName)
+  
+  ft_comments_2223 <-flextable(comments_fn)
+  #Bold CA & Project Name & Proportions Columns
+  ft_comments_2223 <- bold(ft_comments_2223, i = NULL, j = "Project", bold = TRUE, part = "all")
+  #Bold Header
+  ft_comments_2223 <- bold(ft_comments_2223, i = 1, j = NULL, bold = TRUE, part = "header")
+  #Center the text 
+  ft_comments_2223 <- align(ft_comments_2223, i = NULL, j = 2:3, align = "center", part = "all")
+  #Font
+  ft_comments_2223 <- font(ft_comments_2223, fontname = "Arial", part = "all")
+  ft_comments_2223 <- fontsize(ft_comments_2223, size = 9, part = "all")
+  #Adjust column widths
+  ft_comments_2223 <- width(ft_comments_2223, j = 1, width = 8, unit = "cm")
+  ft_comments_2223 <- width(ft_comments_2223, j = 3, width = 20, unit = "cm")
+  #Add gridlines
+  ft_comments_2223 <- border_outer(ft_comments_2223)
+  ft_comments_2223 <- border_inner_h(ft_comments_2223)
+  ft_comments_2223 <- border_inner_v(ft_comments_2223)
+  #Change header labels
+  ft_comments_2223 <- set_header_labels(ft_comments_2223,
+                                        Project = "Site",
+                                        Phase = "Phase",
+                                        DQ_Comments = "Data Quality Comments",
+                                        values = NULL)
+  
+}
+
+print(comments.table(1))
+```
+
+```{r Slide 7}
+#Overall progress table
+#Uncombined metrics
+current_metrics_progress_uncomb <- TLHC_load_uncomb %>%
+  filter(Metric == "Number of people invited to a Targeted Lung Health Check - first invites" |
+           #Metric == "Number of patients who accepted a LDCT Scan appointment" |
+           Metric == "Number of patients who attended a face to face Lung Health Check Appointment" |
+           Metric == "Number of patients who attended a telephone Lung Health Check Appointment" |
+           Metric == "Number of patients who did not attend a face to face Lung Health Check Appointment" |
+           Metric == "Number of patients who did not attend a telephone Lung Health Check Appointment" |
+           Metric == "Number of patients who have had a 12 month follow up LDCT scan performed" | 
+           Metric == "Number of patients who have had a 24 month follow up LDCT scan performed" | 
+           Metric == "Number of patients who have had a 48 month surveillance LDCT scan performed" |
+           Metric == "Number of patients who have had a 3 month follow up LDCT scan performed" |                                                                                                                                 
+           Metric == "Number of patients who have had an initial LDCT scan performed" |
+           Metric == "Number of patients with incidental findings") %>%
+  mutate(Phase = str_replace(Phase, "1", "Phases One and Two")) %>%
+  mutate(Phase = str_replace(Phase, "2", "Phases One and Two")) %>%
+  group_by(Metric, Phase) %>%
+  summarise(value = sum(value1, na.rm = TRUE)) 
+
+
+#Combined metrics
+current_metrics_progress_comb <- TLHC_Load_comb %>%
+  filter(Metric == "Number of patients who attended a Lung Health Check Appointment" |
+           Metric == "Total number of CT scans performed" |
+           Metric == "Number of patients who did not attend a Lung Health Check Appointment") %>%
+  mutate(Phase = str_replace(Phase, "1", "Phases One and Two")) %>%
+  mutate(Phase = str_replace(Phase, "2", "Phases One and Two")) %>%
+  group_by(Metric, Phase) %>%
+  summarise('value' = sum(value2, na.rm = TRUE)) 
+
+#Join current metric progress tables
+current_metrics_progress <-
+  rbind(current_metrics_progress_uncomb,
+        current_metrics_progress_comb)
+
+#Transpose current metrics progress table
+metrics_progress <- pivot_wider(current_metrics_progress, names_from = Phase, values_from = value) %>%
+  rename("Phases 1&2" = "Phases One and Two") %>%
+  rename("Phase 3" = "3") %>%
+  adorn_totals("col",name = 'Total', fill = "", na.rm = TRUE)
+
+#Order correctly
+#metrics_progress_order <- metrics_progress[c(11,1,13,2,3,12,4,5,14,9,8,7,6,10),]
+#metrics_progress_ordered <- metrics_progress_order[,c(1,3,2,4),]
+metrics_progress_row_levels<- c("Number of people invited to a Targeted Lung Health Check - first invites"
+                                #, "Number of patients who accepted a LDCT Scan appointment"
+                                , "Number of patients who attended a Lung Health Check Appointment"
+                                , "Number of patients who attended a face to face Lung Health Check Appointment"
+                                , "Number of patients who attended a telephone Lung Health Check Appointment"
+                                , "Number of patients who did not attend a Lung Health Check Appointment"
+                                , "Number of patients who did not attend a face to face Lung Health Check Appointment"
+                                , "Number of patients who did not attend a telephone Lung Health Check Appointment"
+                                , "Total number of CT scans performed"
+                                , "Number of patients who have had an initial LDCT scan performed"
+                                , "Number of patients who have had a 3 month follow up LDCT scan performed"
+                                , "Number of patients who have had a 12 month follow up LDCT scan performed"
+                                , "Number of patients who have had a 24 month follow up LDCT scan performed"
+                                , "Number of patients who have had a 48 month surveillance LDCT scan performed"
+                                , "Number of patients with incidental findings")
+
+metrics_progress_ordered<- metrics_progress %>%
+  arrange(factor(Metric, levels = metrics_progress_row_levels)) %>%
+  select(Metric, `Phases 1&2`, `Phase 3`, Total )
+
+#Formatting
+metrics_overall <- flextable(metrics_progress_ordered)
+# add title
+metrics_overall <- add_header_lines(metrics_overall, values = paste0("National data from programme start to date (", vWdate_format, ")"))
+#metrics_overall <- set_caption(metrics_overall, paste0("National data from programme start to date (", vWdate_format, ")")) 
+#font
+metrics_overall <- font(metrics_overall, fontname = "Arial", part = "all")
+metrics_overall <- fontsize(metrics_overall, size = 8, part = "all")
+metrics_overall <- fontsize(metrics_overall, size = 11, part = "header")
+#bold
+metrics_overall <- bold(metrics_overall, i = 1, bold = TRUE, part = "all")
+metrics_overall <- bold(metrics_overall, i = 1, bold = TRUE, part = "body")
+metrics_overall <- bold(metrics_overall, i = 2, bold = TRUE, part = "body")
+metrics_overall <- bold(metrics_overall, i = 5, bold = TRUE, part = "body")
+metrics_overall <- bold(metrics_overall, i = 8, bold = TRUE, part = "body")
+metrics_overall <- bold(metrics_overall, i = 13, bold = TRUE, part = "body")
+#size
+metrics_overall <- width(metrics_overall, width = 2.8, unit = "cm")
+metrics_overall <- width(metrics_overall, j = 1, width = 9.28, unit = "cm")
+metrics_overall <- height(metrics_overall, height = 0.59, part = "body", unit = "cm")
+# fill columns
+metrics_overall <- bg(metrics_overall, i = 1, bg = "#000080", part = "header")
+metrics_overall <- bg(metrics_overall, i = 1, bg = "#B7DBFC", part = "body")
+metrics_overall <- bg(metrics_overall, i = 2, bg = "#B7DBFC", part = "body")
+metrics_overall <- bg(metrics_overall, i = 5, bg = "#B7DBFC", part = "body")
+metrics_overall <- bg(metrics_overall, i = 8, bg = "#B7DBFC", part = "body")
+metrics_overall <- bg(metrics_overall, i = 14, bg = "#B7DBFC", part = "body")
+#color font 
+metrics_overall <- color(metrics_overall, i = 1, color = "white", part = "header")
+#align the text 
+metrics_overall <- align(metrics_overall, i = NULL, align = "center", part = "all")
+metrics_overall <- align(metrics_overall, j = 1, align = "right", part = "all")
+metrics_overall <- align(metrics_overall, align = "center", part = "header")
+#Add gridlines
+metrics_overall <- border_outer(metrics_overall)
+metrics_overall <- border_inner_h(metrics_overall)
+metrics_overall <- border_inner_v(metrics_overall)
+
+#print
+print(metrics_overall)
+
+#Main metric past 6 months bar chart
+#Data Table - combined
+metrics_progress_chart <- TLHC_Load_comb %>%
+  mutate(Metric = str_replace(Metric, "Number of people invited to a Targeted Lung Health Check - first invites", "1Number of people invited to a Targeted Lung Health Check - first invites")) %>%
+  filter(month <= vWdate_format, month >= vWdate_format6, Metric == "1Number of people invited to a Targeted Lung Health Check - first invites" |
+           Metric == "Number of patients who attended a Lung Health Check Appointment" |
+           Metric == "Total number of CT scans performed") %>%
+  group_by(month, Metric) %>%
+  summarise('value' = sum(value2, na.rm = TRUE))
+
+
+
+#cancers_time <- ggplot(cancers_time_chart, aes(x = as.POSIXct(month), y = value, group = 1)) +
+
+
+
+#chart
+ggplot(metrics_progress_chart, aes(month, value, fill = Metric)) + geom_col(stat="identity", position=position_identity(), alpha=1)
+
+#formatting
+metrics_chart <- ggplot(metrics_progress_chart, aes(x = as.POSIXct(as.Date.yearmon(as.yearmon(month))), y = value, color = Metric))+ 
+  geom_bar(stat="identity", position=position_identity(), alpha=1, fill = "white") + 
+  geom_text(aes(label = scales::comma(value, accuracy = 1)), vjust = 1.25) +
+  theme_classic() +
+  ggtitle(paste0("National activity from the last 6 months: ", vWdate_format6, " - ", vWdate_format)) +
+  theme(axis.title = element_text(face="bold")) +
+  theme(plot.title = element_text(size = 11,face = "bold")) +
+  theme(legend.position="bottom", legend.title=element_blank(), legend.text=element_text(size=10)) +
+  scale_color_manual(labels = c("Number of people invited to a Targeted Lung Health Check - first invites", "Number of patients who attended a Lung Health Check Appointment", "Total number of CT scans performed"),
+                     values=c("#4472C4", "#BF9000", "#7030A0")) +
+  theme(axis.title = element_blank())+
+  scale_y_continuous(labels=comma) +
+  scale_x_datetime(date_breaks = "1 month", date_labels =  "%b %Y") +
+  guides(colour = guide_legend(nrow = 3))
+```
+
+```{r Slide 8}
+#Cancers diagnosed time series
+#data
+cancers_time_chart <- TLHC_Load_comb %>%
+  filter(Metric == "Total number of lung cancers diagnosed") %>%
+  group_by(month) %>%
+  summarise('value' = sum(value2, na.rm = TRUE)) %>%
+  mutate(month = as.yearmon(month))
+
+
+#chart
+ggplot(cancers_time_chart, aes(x = month, y = value, group = 1)) + geom_line()
+
+#formatting
+#cancers_time <- ggplot(cancers_time_chart, aes(x = as.POSIXct(month), y = value, group = 1)) +
+cancers_time <- ggplot(cancers_time_chart, aes(x = factor(month), y = value, group = 1)) + 
+  geom_line(size = 1, color = "#5dbb63") +
+  geom_point( color = "5DBB63", size = 1) +
+  geom_text(aes(label = value, vjust = -0.3)) +
+  theme_classic() +
+  ggtitle(paste0("Number of lung cancers diagnosed: April 2019 - ", vWdate_format)) +
+  theme(axis.title = element_text(face="bold")) +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(axis.title = element_blank()) +
+  #scale_x_datetime(date_breaks = "1 month", date_labels =  "%b %Y") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#Stage diagnosis pie chart
+#data
+cancers_pie_chart <- TLHC_load_uncomb %>%
+  filter(Metric == "Number of patients with a Lung Cancer diagnosed at stage 1" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 2" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 3" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 4" |
+           Metric == "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged") %>%
+  group_by(Metric) %>%
+  summarise('value' = sum(value1, na.rm = TRUE)) %>%
+  mutate('stage_fraction' = value/sum(value)) %>%
+  mutate('stage_cumulative' = cumsum(stage_fraction)) %>%
+  mutate('stage_head' = c(0, head(stage_cumulative, n =-1))) %>%
+  mutate('label_position' = (stage_cumulative + stage_head) / 2) %>%
+  mutate(Metric = str_replace_all(Metric, "Number of patients with a Lung Cancer diagnosed at s", "\nS")) %>% #Put on new line otherwise text labels overlap 
+  mutate(Metric = str_replace(Metric, "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged", "Unknown")) %>%
+  mutate('label' = paste0(Metric, "\n", percent(stage_fraction, accuracy = 1)))
+
+#chart
+cancers_pie <- ggplot(cancers_pie_chart, aes(ymax=stage_cumulative, ymin=stage_head, xmax=4, xmin=3, fill=Metric)) +
+  geom_rect() +
+  ggtitle(paste0("Stage breakdown of lung cancers diagnosed")) +
+  coord_polar(theta="y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(axis.title = element_text(face="bold", size=8)) +
+  #theme(axis.title = element_text(size=8)) +
+  theme(plot.title = element_text(face = "bold", size=12)) +
+  theme(axis.title = element_blank()) +
+  scale_fill_manual(values=c("#92D050", "#548235", "#FFC000", "#ED7D31", "#9e4102")) +
+  theme(legend.position = "none")+
+  geom_text(aes(x=3.6, y=label_position, label=label), size=4)
+```
+
+```{r Slide 9}
+#Combine Trajectory and TLHC Load up to current month
+
+
+#Create new Master_Template for financial year 22/23 - all that's needed plus resolves some issues with formatting and the join.
+
+TLHC_Load_comb_2223<- TLHC_Load_comb 
+TLHC_Load_comb_2223$month<- as.yearmon(TLHC_Load_comb_2223$month)
+TLHC_Load_comb_2223<- TLHC_Load_comb_2223 %>%
+  filter(Metric == "Number of people invited to a Targeted Lung Health Check - first invites"  
+        | Metric == "Number of patients who attended a Lung Health Check Appointment"
+        | Metric == "Total number of CT scans performed") %>%
+  filter(month > "Mar 2022" & month <= "Mar 2023") 
+
+
+#Master_Template <- left_join(TLHC_Load_comb,
+#                             Trajectory_2223[c("Project", "trajectory", "month", "Metric")],
+#                             by = c("Project", "month", "Metric"))
+
+
+Master_Template_2223<- TLHC_Load_comb_2223 %>%
+  left_join(Trajectory_2223[c("Project", "trajectory", "month", "Metric")],
+                             by = c("Project", "month", "Metric")) 
+#data table
+#invites 2223 to date & trajectory 
+invites_current_traj <- Master_Template_2223 %>%
+  filter(Metric == "Number of people invited to a Targeted Lung Health Check - first invites") %>%
+  filter(month > "Mar 2022" & month <= "Mar 2023") %>%
+ # filter(month > "2022-03-01", month <= "2023-03-01", Metric == "Number of people invited to a Targeted Lung Health Check - first invites") %>%
+  group_by(CAName, Project) %>%
+  summarise('invites_3actual_2223' = sum(as.numeric(value2),na.rm =TRUE),
+            'invites_2current_traj' = sum(as.numeric(trajectory), na.rm = TRUE)) 
+
+invites_total_traj <- Trajectory_2223 %>%
+  filter(Metric == "Number of people invited to a Targeted Lung Health Check - first invites") %>%
+  group_by(CAName, Project) %>%
+  summarise('invites_1traj_2223' = sum(as.numeric(trajectory), na.rm = TRUE)) 
+
+#join tables
+invites_traj_progress <- left_join(invites_current_traj,
+                                   invites_total_traj[c("Project", "invites_1traj_2223")],
+                                   by = c("Project"))
+
+#transpose
+invites_traj_trans <- pivot_longer(invites_traj_progress, 
+                                   cols = starts_with("invites"),
+                                   names_to = "invites",
+                                   values_to = "value") %>%
+  group_by(CAName, invites) %>%
+  summarise("value" = sum(value, na.rm = TRUE))
+
+#chart
+ggplot(invites_traj_trans, aes(CAName, value, fill = invites)) + geom_col(stat="identity", position=position_identity(), alpha=1)
+
+#format
+invites_chart <- ggplot(invites_traj_trans, aes(x =  fct_rev(as_factor(CAName)), y = value, color = invites, fill = invites, linetype = invites)) + 
+  geom_bar(stat="identity", position=position_identity(), alpha=1) +
+  geom_text(aes(label=ifelse(invites=='invites_3actual_2223',paste0(scales::comma(value, accuracy = 1))," "), hjust = -0.1), color = "black", size = 3.5) +
+  coord_flip() +
+  theme_classic() +
+  ggtitle(paste0("Total Number of Participants Invited in 22/23 (April 2022 - ", vWdate_format, ")")) +
+  theme(axis.title = element_text(face="bold")) +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(legend.position="bottom", legend.title=element_blank(), legend.text=element_text(size=12)) +
+  scale_color_manual(labels = c("Number of participants estimated to be invited in total in 22-23",  paste0("Number of participants estimated to be invited by ", vWdate_format), paste0("Actual number of participants that have been invited by ", vWdate_format)),
+                     values=c("black", "#4472C4", "#4472C4")) +
+  scale_fill_manual(labels = c("Number of participants estimated to be invited in total in 22-23", paste0("Number of participants estimated to be invited by ", vWdate_format), paste0("Actual number of participants that have been invited by ", vWdate_format)),
+                    values=c("white", "white", "#4472C4")) +
+  scale_linetype_manual(labels = c("Number of participants estimated to be invited in total in 22-23",  paste0("Number of participants estimated to be invited by ", vWdate_format), paste0("Actual number of participants that have been invited by ", vWdate_format)),
+                        values=c("solid", "dashed", "solid")) +
+  theme(axis.title = element_blank()) +
+  scale_y_continuous(labels=comma) +
+  guides(colour = guide_legend(nrow = 3))
+
+```
+
+```{r Slide 10}
+#Combine Trajectory and TLHC Load up to current month
+#people name change for trajectory
+#Master_Template_LHC <- left_join(TLHC_Load_comb,
+#                                 Trajectory_2223[c("Project", "trajectory", "month", "Metric")],
+#                                 by = c("Project", "month", "Metric"))
+
+
+#data table
+#LHCs 2223 to date & trajectory 
+#LHCs_current_traj <- Master_Template_LHC %>%
+LHCs_current_traj <- Master_Template_2223 %>%
+  filter(Metric == "Number of patients who attended a Lung Health Check Appointment") %>%
+  #filter(month > "Mar 2022" & month <= "Mar 2023") %>%
+ # filter(month > "2022-03-01", month <= "2023-03-01", Metric == "Number of patients who attended a Lung Health Check Appointment") %>%
+  group_by(CAName, Project) %>%
+  summarise('LHCs_3actual_2223' = sum(as.numeric(value2),na.rm=TRUE),
+            'LHCs_2current_traj' = sum(as.numeric(trajectory), na.rm = TRUE)) 
+
+
+
+
+LHCs_total_traj <- Trajectory_2223 %>%
+  filter(Metric == "Number of patients who attended a Lung Health Check Appointment") %>%
+  group_by(CAName, Project) %>%
+  summarise('LHCs_1traj_2223' = sum(as.numeric(trajectory), na.rm = TRUE)) 
+
+#join tables
+LHCs_traj_progress <- left_join(LHCs_current_traj,
+                                LHCs_total_traj[c("Project", "LHCs_1traj_2223")],
+                                by = c("Project"))
+
+#transpose
+LHCs_traj_trans <- pivot_longer(LHCs_traj_progress, 
+                                cols = starts_with("LHCs"),
+                                names_to = "LHCs",
+                                values_to = "value") %>%
+  group_by(CAName, LHCs) %>%
+  summarise("value" = sum(value, na.rm = TRUE)) 
+
+#chart
+ggplot(LHCs_traj_trans, aes(CAName, value, fill = LHCs)) + geom_col(stat="identity", position=position_identity(), alpha=1)
+
+#format
+LHCs_chart <- ggplot(LHCs_traj_trans, aes(x =  fct_rev(as_factor(CAName)), y = value, color = LHCs, fill = LHCs, linetype = LHCs)) + 
+  geom_bar(stat="identity", position=position_identity(), alpha=1) +
+  geom_text(aes(label=ifelse(LHCs=='LHCs_3actual_2223',paste0(scales::comma(value, accuracy = 1))," "), hjust = -0.1), color = "black", size = 3.5) +
+  coord_flip() +
+  theme_classic() +
+  ggtitle(paste0("Total Number of LHCs Attended in 22/23 (April 2022 - ", vWdate_format, ")")) +
+  theme(axis.title = element_text(face="bold")) +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(legend.position="bottom", legend.title=element_blank(), legend.text=element_text(size=12)) +
+  scale_color_manual(labels = c("Number of LHCs estimated to be attended in total in 22-23",  paste0("Number of LHCs estimated to be attended by ", vWdate_format), paste0( "Actual number of LHCs that have been attended by ", vWdate_format)),
+                     values=c("black", "#BF9000", "#BF9000")) +
+  scale_fill_manual(labels = c("Number of LHCs estimated to be attended in total in 22-23",  paste0("Number of LHCs estimated to be attended by ", vWdate_format), paste0( "Actual number of LHCs that have been attended by ", vWdate_format)),
+                    values=c("white", "white", "#BF9000")) +
+  scale_linetype_manual(labels = c("Number of LHCs estimated to be attended in total in 22-23",  paste0("Number of LHCs estimated to be attended by ", vWdate_format), paste0( "Actual number of LHCs that have been attended by ", vWdate_format)),
+                        values=c("solid", "dashed", "solid")) +
+  theme(axis.title = element_blank()) +
+  scale_y_continuous(labels=comma) +
+  guides(colour = guide_legend(nrow = 3))
+```
+```{r Slide 11}
+#Combine Trajectory and TLHC Load up to current month
+#Master_Template <- left_join(TLHC_Load_comb,
+#                             Trajectory_2223[c("Project", "trajectory", "month", "Metric")],
+#                             by = c("Project", "month", "Metric"))
+
+#Master_Template$month<- as.yearmon(Master_Template$month)
+
+#data table
+#scans 2223 to date & trajectory 
+scans_current_traj <- Master_Template_2223 %>%
+  filter(Metric == "Total number of CT scans performed") %>%
+  #filter(month > "Mar 2022" & month <= "Mar 2023") %>%
+  #filter(month > "2022-03-01", month <= "2023-03-01", Metric == "Total number of CT scans performed") %>%
+  group_by(CAName, Project) %>%
+  summarise('scans_3actual_2223' = sum(as.numeric(value2), na.rm=TRUE),
+            'scans_2current_traj' = sum(as.numeric(trajectory), na.rm = TRUE))
+
+scans_total_traj <- Trajectory_2223 %>%
+  filter(Metric == "Total number of CT scans performed") %>%
+  group_by(CAName, Project) %>%
+  summarise('scans_1traj_2223' = sum(as.numeric(trajectory), na.rm = TRUE)) 
+
+#join tables
+scans_traj_progress <- left_join(scans_current_traj,
+                                 scans_total_traj[c("Project", "scans_1traj_2223")],
+                                 by = c("Project"))
+
+#transpose
+scans_traj_trans <- pivot_longer(scans_traj_progress, 
+                                 cols = starts_with("scans"),
+                                 names_to = "scans",
+                                 values_to = "value") %>%
+  group_by(CAName, scans) %>%
+  summarise("value" = sum(value, na.rm = TRUE)) 
+
+#chart
+ggplot(scans_traj_trans, aes(CAName, value, fill = scans)) + geom_col(stat="identity", position=position_identity(), alpha=1)
+
+#format
+scans_chart <- ggplot(scans_traj_trans, aes(x =  fct_rev(as_factor(CAName)), y = value, color = scans, fill = scans, linetype = scans)) + 
+  geom_bar(stat="identity", position=position_identity(), alpha=1) +
+  geom_text(aes(label=ifelse(scans=='scans_3actual_2223',paste0(scales::comma(value, accuracy = 1))," "), hjust = -0.1), color = "black", size = 3.5) +
+  coord_flip() +
+  theme_classic() +
+  ggtitle(paste0("Total Number of CT Scans Completed in 22/23 (April 2022 - ", vWdate_format, ")")) +
+  theme(axis.title = element_text(face="bold")) +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(legend.position="bottom", legend.title=element_blank(), legend.text=element_text(size=12)) +
+  scale_color_manual(labels = c("Number of CT scans estimated to be completed in total in 22-23",  paste0("Number of CT scans estimated to be completed by ", vWdate_format), paste0("Actual number of CT scans that have been completed by ", vWdate_format)),
+                     values=c("black", "#7030A0", "#7030A0")) +
+  scale_fill_manual(labels = c("Number of CT scans estimated to be completed in total in 22-23",  paste0("Number of CT scans estimated to be completed by ", vWdate_format), paste0("Actual number of CT scans that have been completed by ", vWdate_format)),
+                    values=c("white", "white", "#7030A0")) +
+  scale_linetype_manual(labels = c("Number of CT scans estimated to be completed in total in 22-23",  paste0("Number of CT scans estimated to be completed by ", vWdate_format), paste0("Actual number of CT scans that have been completed by ", vWdate_format)),
+                        values=c("solid", "dashed", "solid")) +
+  theme(axis.title = element_blank()) +
+  scale_y_continuous(labels=comma) +
+  guides(colour = guide_legend(nrow = 3))
+```
+
+```{r Slide 12, fig.height=9}
+#Alliance Level Chart
+#stage cancer data
+stage_data <- TLHC_load_uncomb %>%
+  filter(Metric == "Number of patients with a Lung Cancer diagnosed at stage 1" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 2" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 3" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 4" |
+           Metric == "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged") %>%
+  mutate(Metric = str_replace(Metric, "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged", "Number of patients with a Lung Cancer diagnosed at stage unknown")) %>%
+  group_by(CAName, Metric) %>%
+  summarise("cancers_diagnosed" = sum(as.numeric(value1), na.rm = TRUE))
+
+#Total Cancers
+total_cancers <- stage_data %>%
+  group_by(CAName) %>%
+  summarise("Total_Cancers" = sum(as.numeric(cancers_diagnosed), na.rm = TRUE))
+
+
+#chart
+ggplot(stage_data, aes(CAName, cancers_diagnosed, fill = Metric)) + geom_col(stat="identity", alpha=1)
+
+#formatting
+stage_alliance <- ggplot(stage_data, aes(x = CAName, y = cancers_diagnosed, fill = Metric)) + 
+  geom_bar(stat="identity", alpha=1) + 
+  theme_classic() +
+  geom_text(aes(label = after_stat(y), group = CAName), stat = 'summary', fun = sum, vjust = -0.2, size = 2.5) +
+  ggtitle(paste0("Lung cancers diagnosed to date (", vWdate_format, "): Alliances")) +
+  theme(plot.title = element_text(face = "bold", size=9.5, margin=margin(0,0,0,0))) +
+  theme(legend.position="bottom", legend.title=element_blank(), legend.text=element_text(size=9)) +
+  scale_fill_manual(values=c("#92D050", "#548235", "#FFC000", "#ED7D31", "#9e4102")) +
+  theme(axis.title = element_blank())+
+  scale_y_continuous(labels=comma, expand = expansion(mult = c(0, .1))) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  guides(fill = guide_legend(nrow = 5))
+
+#Site Level Chart
+#stage cancer data
+stage_data <- TLHC_load_uncomb %>%
+  filter(Metric == "Number of patients with a Lung Cancer diagnosed at stage 1" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 2" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 3" |
+           Metric == "Number of patients with a Lung Cancer diagnosed at stage 4" |
+           Metric == "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged") %>%
+  mutate(Metric = str_replace(Metric, "Number of participants with a Lung Cancer diagnosed with an unknown stage, that cannot be staged", "Number of patients with a Lung Cancer diagnosed at stage unknown")) %>%
+  group_by(CAName, Project, Metric) %>%
+  summarise("cancers_diagnosed" = sum(value1, na.rm = TRUE))
+
+#Join CA rank
+# site_stage <- left_join(stage_data,
+#                         CA_Rank[c("CAName", "Rank")],
+#                         by = c("CAName"))
+
+site_stage <- left_join(stage_data, CA_Rank, by="CAName")
+
+
+#remove CCG
+
+
+site_stage$Project <- gsub("CCGs$", "", site_stage$Project)
+site_stage$Project <- gsub("CCG", "", site_stage$Project)
+
+
+
+#function
+site_stage.chart <- function(t) {
+  site_stage_fn <- site_stage %>%
+    filter(Rank == t)
+  
+  #Total Cancers
+  total_cancers <- stage_data %>%
+    group_by(CAName, Project) %>%
+    summarise("Total_Cancers" = sum(cancers_diagnosed, na.rm = TRUE))
+  
+  #chart
+  #ggplot(site_stage_fn, aes(Project, cancers_diagnosed, fill = Metric)) + geom_col(stat="identity", alpha=1)
+  
+  #formatting
+  stage_site <- ggplot(site_stage_fn, aes(x = Project, y = cancers_diagnosed, fill = Metric)) + 
+    geom_bar(stat="identity", alpha=1) + 
+    theme_classic() +
+    geom_text(aes(label = after_stat(y), group = Project), stat = 'summary', fun = sum, vjust = -0.2, size = 3) +
+    ggtitle(paste0("Lung cancers diagnosed to date (", vWdate_format, "): Sites")) +
+    theme(axis.title = element_text(face="bold")) +
+    theme(plot.title = element_text(face = "bold")) +
+    theme(legend.position="bottom", legend.title=element_blank(), legend.text=element_text(size=9)) +
+    scale_fill_manual(values=c("#92D050", "#548235", "#FFC000", "#ED7D31", "#9e4102")) +
+    theme(axis.title = element_blank())+
+    scale_y_continuous(labels=comma) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    guides(fill = guide_legend(nrow = 5))
+  
+}
+
+print(site_stage.chart(1))
+```
+
+```{r slide 13 b}
+#Summary table
+#Invites This Month 
+invites_2223 <- Master_Template_2223 %>%
+  #filter(month > "2022-03-01", month <= "2023-03-01", 
+  filter(Metric == "Number of people invited to a Targeted Lung Health Check - first invites") %>%
+  group_by(CAName, Project, Phase) %>%
+  summarise('invites_2223' = sum(as.numeric(value2), na.rm = TRUE),
+            'trajectory_invites_2223' = sum(as.numeric(trajectory))) %>%
+  adorn_totals("row",name = 'Total', fill = "", na.rm = TRUE) %>%
+  mutate('Invites_Performance_2223' = percent(invites_2223/trajectory_invites_2223, accuracy = 0.1))
+
+#LHCs This Month Check
+LHC_2223 <- Master_Template_2223 %>%
+  #filter(month > "2022-03-01", month <= "2023-03-01", 
+  filter(Metric == "Number of patients who attended a Lung Health Check Appointment") %>%
+  group_by(CAName, Project) %>%
+  summarise('LHCs_2223' = sum(as.numeric(value2), na.rm = TRUE),
+            'trajectory_LHCs_2223' = sum(as.numeric(trajectory))) %>%
+  adorn_totals("row",name = 'Total', fill = "", na.rm = TRUE) %>%
+  mutate('LHCs_Performance_2223' = percent(LHCs_2223/trajectory_LHCs_2223, accuracy = 0.1))
+
+#CT Scans (Total) This Month Check
+CT_Total_2223 <- Master_Template_2223 %>%
+  #filter(month > "2022-03-01", month <= "2023-03-01", 
+  filter(Metric == "Total number of CT scans performed") %>%
+  group_by(CAName, Project) %>%
+  summarise('Total_CTScans_2223' = sum(as.numeric(value2), na.rm = TRUE),
+            'trajectory_CTScans_2223' = sum(as.numeric(trajectory))) %>%
+  adorn_totals("row",name = 'Total', fill = "", na.rm = TRUE) %>%
+  mutate('CTScan_Performance_2223' = percent(Total_CTScans_2223/trajectory_CTScans_2223, accuracy = 0.1))
+
+#Join metric tables
+Performance_2223_Join <- 
+  left_join(invites_2223,
+            LHC_2223,
+            by = c("Project"),
+            suffix = c("",".LHCs")) %>%
+  left_join(.,
+            CT_Total_2223,
+            by =  c("Project"),
+            suffix = c("",".scans")) %>% 
+  select(-CAName.LHCs,  -CAName.scans, -trajectory_invites_2223, -trajectory_LHCs_2223, -trajectory_CTScans_2223) 
+
+#Join CA rank
+performance_join <- left_join(Performance_2223_Join,
+                        #CA_Rank[c("CAName", "Rank")],
+                        CA_Rank,
+                        #by = c("CAName"))
+                        by = "CAName")
+#remove CCG
+performance_join$Project <- gsub("CCGs$", "", performance_join$Project)
+performance_join$Project <- gsub("CCG", "", performance_join$Project)
+
+
+#function
+performance.table <- function(t) {
+  performance_fn <- performance_join %>%
+    filter(Rank == t) %>%
+    select(-Rank, -CAName)
+
+#New row
+new_row <- list(
+  "Project" = vWdate_format,
+  "Phase" = "",
+  "invites_2223" = "Number of participants invited 22-23",
+  "Invites_Performance_2223" = "",
+  "LHCs_2223" = "Number of LHCs attended 22-23",
+  "LHCs_Performance_2223" = "",
+  "Total_CTScans_2223" = "Number of CT scans completed 22-23",
+  "CTScan_Performance_2223" = "")
+
+ft_performance_2223 <-flextable(performance_fn)
+#Bold CA & Project Name & Prorpotions Columns
+ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "Project", bold = TRUE, part = "all")
+ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "Invites_Performance_2223", bold = TRUE, part = "all")
+ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "LHCs_Performance_2223", bold = TRUE, part = "all")
+ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "CTScan_Performance_2223", bold = TRUE, part = "all")
+#Bold Header
+ft_performance_2223 <- bold(ft_performance_2223, i = 1, j = NULL, bold = TRUE, part = "header")
+#Center the text 
+ft_performance_2223 <- align(ft_performance_2223, i = NULL, j = 2:8, align = "center", part = "all")
+#Font
+ft_performance_2223 <- font(ft_performance_2223, fontname = "Arial", part = "all")
+ft_performance_2223 <- fontsize(ft_performance_2223, size = 9, part = "all")
+#Adjust column widths
+ft_performance_2223 <- width(ft_performance_2223, j = 1, width = 6, unit = "cm")
+#Change header labels
+ft_performance_2223 <- add_header(ft_performance_2223, values = new_row, top = TRUE)
+ft_performance_2223 <- theme_booktabs(ft_performance_2223, bold_header = TRUE)
+ft_performance_2223 <- align(ft_performance_2223, align = "center", part = "all")
+#fill headers
+ft_performance_2223 <- bg(ft_performance_2223, i = 1, j = 3:4, bg = "#203764", part = "header")
+ft_performance_2223 <- bg(ft_performance_2223, i = 2, j = 3:4, bg = "#D9E1F2", part = "header")
+ft_performance_2223 <- bg(ft_performance_2223, i = 1, j = 5:6, bg = "#BF8F00", part = "header")
+ft_performance_2223 <- bg(ft_performance_2223, i = 2, j = 5:6, bg = "#FFF2CC", part = "header")
+ft_performance_2223 <- bg(ft_performance_2223, i = 1, j = 7:8, bg = "#7030A0", part = "header")
+ft_performance_2223 <- bg(ft_performance_2223, i = 2, j = 7:8, bg = "#FAF1FD", part = "header")
+#Font color header change
+ft_performance_2223 <- color(ft_performance_2223, i = 1, j = 3:8, color = "white", part = "header")
+#Merge
+ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 1:2, part = "header")
+ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 3:4, part = "header")
+ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 5:6, part = "header")
+ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 7:8, part = "header")
+#change size
+ft_performance_2223 <- width(ft_performance_2223, j = 1, width = 5.53, unit = "cm")
+ft_performance_2223 <- width(ft_performance_2223, j = 2, width = 1.42, unit = "cm")
+ft_performance_2223 <- width(ft_performance_2223, j = 3:8, width = 4.42, unit = "cm")
+#Add gridlines
+ft_performance_2223 <- border_outer(ft_performance_2223)
+ft_performance_2223 <- border_inner_h(ft_performance_2223)
+ft_performance_2223 <- border_inner_v(ft_performance_2223)
+#Change header labels
+ft_performance_2223 <- set_header_labels(ft_performance_2223,
+                                         Project = "Site",
+                                         Phase = "Phase",
+                                         invites_2223 = paste0("Invites Sent in 22-23 up to ", vWdate_format),
+                                         Invites_Performance_2223 = paste0(" Invites sent as a % of trajectory up to  ", vWdate_format),
+                                         LHCs_2223 = paste0("LHCs Attended in 22-23 up to ", vWdate_format),
+                                         LHCs_Performance_2223 = paste0("LHCs attended as a % of trajectory up to ", vWdate_format),
+                                         Total_CTScans_2223 =paste0("Total CT Scans completed in 22-23 up to ", vWdate_format),
+                                         CTScan_Performance_2223 = paste0("Total CT Scans completed as a % of trajectory up to ", vWdate_format),
+                                         values = NULL)
+
+
+#Print Table
+#print(ft_performance_2223)
+
+}
+
+print(performance.table(1))
+```
+
+```{r}
+#Invites site graph
+#transpose
+invites_traj_trans_sites <- pivot_longer(invites_traj_progress, 
+                                   cols = starts_with("invites"),
+                                   names_to = "invites",
+                                   values_to = "value") %>%
+  group_by(CAName, Project, invites) %>%
+  summarise("value" = sum(value, na.rm = TRUE)) 
+
+#Join CA rank
+invites_join <- left_join(invites_traj_trans_sites,
+                             # CA_Rank[c("CAName", "Rank")],
+                          CA_Rank,
+                        by = "CAName")
+                            #  by = c("CAName"))
+
+#remove CCG
+invites_join$Project <- gsub("CCGs$", "", invites_join$Project)
+invites_join$Project <- gsub("CCG", "", invites_join$Project)
+
+#function
+invites.chart <- function(t) {
+  invites_fn <- invites_join %>%
+    filter(Rank == t)
+
+#chart
+#ggplot(invites_traj_trans_sites, aes(Project, value, fill = invites)) + geom_col(stat="identity", position=position_identity(), alpha=1)
+
+#format
+invites_filtered <- ggplot(invites_fn, aes(x =  fct_rev(as_factor(Project)), y = value, color = invites, fill = invites, linetype = invites)) + 
+  geom_bar(stat="identity", position=position_identity(), alpha=1) +
+  geom_text(aes(label=ifelse(invites=='invites_3actual_2223',paste0(scales::comma(value, accuracy = 1))," "), hjust = -0.1), color = "black", size = 3.5) +
+  coord_flip() +
+  theme_classic() +
+  ggtitle(paste0("22-23 Activity - Invites")) +
+  theme(axis.title = element_text(face="bold")) +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(legend.position = "bottom", legend.justification = "left", legend.title=element_blank(), legend.text=element_text(size=6)) +
+  scale_color_manual(labels = c("Number of participants estimated to be invited in total in 22-23",  paste0("Number of participants estimated to be invited by ", vWdate_format), paste0("Actual number of participants that have been invited by ", vWdate_format)), 
+                     values=c("black", "#4472C4", "#4472C4")) +
+  scale_fill_manual(labels = c("Number of participants estimated to be invited in total in 22-23",  paste0("Number of participants estimated to be invited by ", vWdate_format), paste0("Actual number of participants that have been invited by ", vWdate_format)),
+                    values=c("white", "white", "#4472C4")) +
+  scale_linetype_manual(labels = c("Number of participants estimated to be invited in total in 22-23",  paste0("Number of participants estimated to be invited by ", vWdate_format), paste0("Actual number of participants that have been invited by ", vWdate_format)),
+                        values=c("solid", "dashed", "solid")) +
+  theme(axis.title = element_blank()) +
+  scale_y_continuous(labels=comma)  +
+  scale_x_discrete(labels= function(x){sub("\\s", "\n", x)}) +
+  guides(colour = guide_legend(nrow = 3)) 
+
+}
+
+print(invites.chart(12))
+```
+
+```{r Slide 13}
+#Summary table
+
+#Only looking at financial year 2022-2023 so recreate and filter Master template to only include months in this time period (and because otherwise trajectories are all NA)
+
+#Invites This Month 
+invites_2223 <- Master_Template_2223 %>%
+  #filter(month > "2022-03-01", month <= "2023-03-01", 
+  filter(Metric == "Number of people invited to a Targeted Lung Health Check - first invites") %>%
+  group_by(CAName, Project, Phase) %>%
+  summarise('invites_2223' = sum(as.numeric(value2), na.rm = TRUE),
+            'trajectory_invites_2223' = sum(as.numeric(trajectory))) %>%
+  adorn_totals("row",name = 'Total', fill = "", na.rm = TRUE) %>%
+  mutate('Invites_Performance_2223' = percent(invites_2223/trajectory_invites_2223, accuracy = 0.1))
+
+#LHCs This Month Check
+LHC_2223 <- Master_Template_2223 %>%
+  #filter(month > "2022-03-01", month <= "2023-03-01", 
+  filter(Metric == "Number of patients who attended a Lung Health Check Appointment") %>%
+  group_by(CAName, Project) %>%
+  summarise('LHCs_2223' = sum(as.numeric(value2), na.rm = TRUE),
+            'trajectory_LHCs_2223' = sum(as.numeric(trajectory))) %>%
+  adorn_totals("row",name = 'Total', fill = "", na.rm = TRUE) %>%
+  mutate('LHCs_Performance_2223' = percent(LHCs_2223/trajectory_LHCs_2223, accuracy = 0.1))
+
+#CT Scans (Total) This Month Check
+CT_Total_2223 <- Master_Template_2223 %>%
+  #filter(month > "2022-03-01", month <= "2023-03-01", 
+  filter(Metric == "Total number of CT scans performed") %>%
+  group_by(CAName, Project) %>%
+  summarise('Total_CTScans_2223' = sum(as.numeric(value2), na.rm = TRUE),
+            'trajectory_CTScans_2223' = sum(as.numeric(trajectory))) %>%
+  adorn_totals("row",name = 'Total', fill = "", na.rm = TRUE) %>%
+  mutate('CTScan_Performance_2223' = percent(Total_CTScans_2223/trajectory_CTScans_2223, accuracy = 0.1))
+
+#Join metric tables
+Performance_2223_Join <- 
+  left_join(invites_2223,
+            LHC_2223,
+            by = c("Project"),
+            suffix = c("",".LHCs")) %>%
+  left_join(.,
+            CT_Total_2223,
+            by =  c("Project"),
+            suffix = c("",".scans")) %>% 
+  select(-CAName.LHCs,  -CAName.scans, -trajectory_invites_2223, -trajectory_LHCs_2223, -trajectory_CTScans_2223) 
+
+#Join CA rank
+performance_join <- left_join(Performance_2223_Join,
+                              CA_Rank,
+                              by = "CAName")
+
+#remove CCG
+performance_join$Project <- gsub("CCGs$", "", performance_join$Project)
+performance_join$Project <- gsub("CCG", "", performance_join$Project)
+
+
+#function
+performance.table <- function(t) {
+  performance_fn <- performance_join %>%
+    filter(Rank == t) %>%
+    select(-Rank, -CAName)
+  
+  #New row
+  new_row <- list(
+    "Project" = vWdate_format,
+    "Phase" = "",
+    "invites_2223" = "Number of participants invited 22-23",
+    "Invites_Performance_2223" = "",
+    "LHCs_2223" = "Number of LHCs attended 22-23",
+    "LHCs_Performance_2223" = "",
+    "Total_CTScans_2223" = "Number of CT scans completed 22-23",
+    "CTScan_Performance_2223" = "")
+  
+  ft_performance_2223 <-flextable(performance_fn)
+  #Bold CA & Project Name & Prorpotions Columns
+  ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "Project", bold = TRUE, part = "all")
+  ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "Invites_Performance_2223", bold = TRUE, part = "all")
+  ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "LHCs_Performance_2223", bold = TRUE, part = "all")
+  ft_performance_2223 <- bold(ft_performance_2223, i = NULL, j = "CTScan_Performance_2223", bold = TRUE, part = "all")
+  #Bold Header
+  ft_performance_2223 <- bold(ft_performance_2223, i = 1, j = NULL, bold = TRUE, part = "header")
+  #Center the text 
+  ft_performance_2223 <- align(ft_performance_2223, i = NULL, j = 2:8, align = "center", part = "all")
+  #Font
+  ft_performance_2223 <- font(ft_performance_2223, fontname = "Arial", part = "all")
+  ft_performance_2223 <- fontsize(ft_performance_2223, size = 9, part = "all")
+  #Adjust column widths
+  ft_performance_2223 <- width(ft_performance_2223, j = 1, width = 6, unit = "cm")
+  #Change header labels
+  ft_performance_2223 <- add_header(ft_performance_2223, values = new_row, top = TRUE)
+  ft_performance_2223 <- theme_booktabs(ft_performance_2223, bold_header = TRUE)
+  ft_performance_2223 <- align(ft_performance_2223, align = "center", part = "all")
+  #fill headers
+  ft_performance_2223 <- bg(ft_performance_2223, i = 1, j = 3:4, bg = "#203764", part = "header")
+  ft_performance_2223 <- bg(ft_performance_2223, i = 2, j = 3:4, bg = "#D9E1F2", part = "header")
+  ft_performance_2223 <- bg(ft_performance_2223, i = 1, j = 5:6, bg = "#BF8F00", part = "header")
+  ft_performance_2223 <- bg(ft_performance_2223, i = 2, j = 5:6, bg = "#FFF2CC", part = "header")
+  ft_performance_2223 <- bg(ft_performance_2223, i = 1, j = 7:8, bg = "#7030A0", part = "header")
+  ft_performance_2223 <- bg(ft_performance_2223, i = 2, j = 7:8, bg = "#FAF1FD", part = "header")
+  #Font color header change
+  ft_performance_2223 <- color(ft_performance_2223, i = 1, j = 3:8, color = "white", part = "header")
+  #Merge
+  ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 1:2, part = "header")
+  ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 3:4, part = "header")
+  ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 5:6, part = "header")
+  ft_performance_2223 <- merge_at(ft_performance_2223, i = 1, j = 7:8, part = "header")
+  #change size
+  ft_performance_2223 <- width(ft_performance_2223, j = 1, width = 5.53, unit = "cm")
+  ft_performance_2223 <- width(ft_performance_2223, j = 2, width = 1.42, unit = "cm")
+  ft_performance_2223 <- width(ft_performance_2223, j = 3:8, width = 4.42, unit = "cm")
+  #Add gridlines
+  ft_performance_2223 <- border_outer(ft_performance_2223)
+  ft_performance_2223 <- border_inner_h(ft_performance_2223)
+  ft_performance_2223 <- border_inner_v(ft_performance_2223)
+  #Change header labels
+  ft_performance_2223 <- set_header_labels(ft_performance_2223,
+                                           Project = "Site",
+                                           Phase = "Phase",
+                                           invites_2223 = paste0("Invites Sent in 22-23 up to ", vWdate_format),
+                                           Invites_Performance_2223 = paste0(" Invites sent as a % of trajectory up to  ", vWdate_format),
+                                           LHCs_2223 = paste0("LHCs Attended in 22-23 up to ", vWdate_format),
+                                           LHCs_Performance_2223 = paste0("LHCs attended as a % of trajectory up to ", vWdate_format),
+                                           Total_CTScans_2223 =paste0("Total CT Scans completed in 22-23 up to ", vWdate_format),
+                                           CTScan_Performance_2223 = paste0("Total CT Scans completed as a % of trajectory up to ", vWdate_format),
+                                           values = NULL)
+  
+  
+  #Print Table
+  #print(ft_performance_2223)
+  
+}
+
+print(performance.table(1))
+```
+
+
+
+```{r LHCs site graph}
+#transpose
+LHCs_traj_trans_sites <- pivot_longer(LHCs_traj_progress, 
+                                      cols = starts_with("LHCs"),
+                                      names_to = "LHCs",
+                                      values_to = "value") %>%
+  group_by(CAName, Project, LHCs) %>%
+  summarise("value" = sum(value, na.rm = TRUE)) 
+
+#Join CA rank
+LHCs_join <- left_join(LHCs_traj_trans_sites,
+                       CA_Rank,
+                       by = "CAName")
+
+
+#remove CCG
+LHCs_join$Project <- gsub("CCGs$", "", LHCs_join$Project)
+LHCs_join$Project <- gsub("CCG", "", LHCs_join$Project)
+
+#function
+LHCs.chart <- function(t) {
+  LHCs_fn <- LHCs_join %>%
+    filter(Rank == t)
+  
+  #chart
+  #ggplot(LHCs_traj_trans_sites, aes(Project, value, fill = LHCs)) + geom_col(stat="identity", position=position_identity(), alpha=1)
+  
+  #format
+  LHCs_filtered <- ggplot(LHCs_fn, aes(x =  fct_rev(as_factor(Project)), y = value, color = LHCs, fill = LHCs, linetype = LHCs)) + 
+    geom_bar(stat="identity", position=position_identity(), alpha=1) +
+    geom_text(aes(label=ifelse(LHCs=='LHCs_3actual_2223',paste0(scales::comma(value, accuracy = 1))," "), hjust = -0.1), color = "black", size = 3.5) +
+    coord_flip() +
+    theme_classic() +
+    ggtitle(paste0("22-23 Activity - LHCs")) +
+    theme(axis.title = element_text(face="bold")) +
+    theme(plot.title = element_text(face = "bold")) +
+    theme(legend.position="bottom", legend.justification = "left", legend.title=element_blank(), legend.text=element_text(size=6)) +
+    scale_color_manual(labels = c("Number of LHCs estimated to be attended in total in 22-23", paste0("Number of LHCs estimated to be attended by ", vWdate_format), paste0("Actual number of LHCs that have been attended by ", vWdate_format)),
+                       values=c("black", "#BF9000", "#BF9000")) +
+    scale_fill_manual(labels = c("Number of LHCs estimated to be attended in total in 22-23",  paste0("Number of LHCs estimated to be attended by ", vWdate_format), paste0("Actual number of LHCs that have been attended by ", vWdate_format)),
+                      values=c("white", "white", "#BF9000")) +
+    scale_linetype_manual(labels = c("Number of LHCs estimated to be attended in total in 22-23", paste0("Number of LHCs estimated to be attended by ", vWdate_format), paste0("Actual number of LHCs that have been attended by ", vWdate_format)),
+                          values=c("solid", "dashed", "solid")) +
+    theme(axis.title = element_blank()) +
+    scale_y_continuous(labels=comma)  +
+    scale_x_discrete(labels= function(x){sub("\\s", "\n", x)}) +
+    guides(colour = guide_legend(nrow = 3))
+  
+}
+
+print(LHCs.chart(1))
+```
+
+```{r scans site graph}
+
+#transpose
+scans_traj_trans_site <- pivot_longer(scans_traj_progress, 
+                                      cols = starts_with("scans"),
+                                      names_to = "scans",
+                                      values_to = "value") %>%
+  group_by(CAName, Project, scans) %>%
+  summarise("value" = sum(value, na.rm = TRUE)) 
+
+#Join CA rank
+scans_join <- left_join(scans_traj_trans_site,
+                        CA_Rank,
+                        by = "CAName")
+
+#remove CCG
+scans_join$Project <- gsub("CCGs$", "", scans_join$Project)
+scans_join$Project <- gsub("CCG", "", scans_join$Project)
+
+#function
+scans.chart <- function(t) {
+  scans_fn <- scans_join %>%
+    filter(Rank == t)
+  
+  #chart
+  #ggplot(scans_traj_trans_site, aes(Project, value, fill = scans)) + geom_col(stat="identity", position=position_identity(), alpha=1)
+  
+  #format
+  scans_filtered <- ggplot(scans_fn, aes(x =  fct_rev(as_factor(Project)), y = value, color = scans, fill = scans, linetype = scans)) + 
+    geom_bar(stat="identity", position=position_identity(), alpha=1) +
+    geom_text(aes(label=ifelse(scans=='scans_3actual_2223',paste0(scales::comma(value, accuracy = 1))," "), hjust = -0.1), color = "black", size = 3.5) +
+    coord_flip() +
+    theme_classic() +
+    ggtitle(paste0("22-23 Activity - CT Scans")) +
+    theme(axis.title = element_text(face="bold")) +
+    theme(plot.title = element_text(face = "bold")) +
+    theme(legend.position="bottom", legend.justification = "left", legend.title=element_blank(), legend.text=element_text(size=6)) +
+    scale_color_manual(labels = c("Number of CT scans estimated to be completed in total in 22-23", paste0( "Number of CT scans estimated to be completed by ", vWdate_format), paste0("Actual number of CT scans that have been completed by ", vWdate_format)),
+                       values=c("black", "#7030A0", "#7030A0")) +
+    scale_fill_manual(labels = c("Number of CT scans estimated to be completed in total in 22-23", paste0( "Number of CT scans estimated to be completed by ", vWdate_format), paste0("Actual number of CT scans that have been completed by ", vWdate_format)),
+                      values=c("white", "white", "#7030A0")) +
+    scale_linetype_manual(labels = c("Number of CT scans estimated to be completed in total in 22-23",  paste0( "Number of CT scans estimated to be completed by ", vWdate_format), paste0("Actual number of CT scans that have been completed by ", vWdate_format)),
+                          values=c("solid", "dashed", "solid")) +
+    theme(axis.title = element_blank()) +
+    scale_y_continuous(labels=comma)  +
+    scale_x_discrete(labels= function(x){sub("\\s", "\n", x)}) +
+    guides(colour = guide_legend(nrow = 3))
+  
+}
+
+print(scans.chart(1))
+```
+
+
+Powerpoint
+
+#rerun from here when edit on slidemaster 
+
+```{r}
+remove(template)
+remove(presentation)
+
+#for(i in 1:16) {
+for (i in seq_along(sort(unique(TLHC_Load$CAName)))) {
+  
+  template <- read_pptx("CA_Quarterly_Packs_Template.pptx")
+
+#dates to quarters
+  vWdate_quarter_format <- sub(" UTC", "", vWdate_format)
+  q1 <- c("2022-04-01", "2022-05-01", "2022-06-01")
+  q2 <- c("2022-07-01", "2022-08-01", "2022-09-01")
+  q3 <- c("2022-10-01", "2022-11-01", "2022-12-01")
+  q4 <- c("2023-01-01", "2023-02-01", "2023-03-01")
+  current_quarter <- ifelse(vWdate_quarter_format %in% q1, "Q1", 
+                            ifelse(vWdate_quarter_format %in% q2, "Q2", 
+                                   ifelse(vWdate_quarter_format %in% q3, "Q3",
+                                          "Q4")))
+  #Subtitle Properties
+  properties <- fp_text(font.family = "Arial", font.size = 20, bold = TRUE)
+  align <- fp_par(text.align = "center")
+
+  
+#####Slide 1
+  
+  #prep work to get CAName
+  title13a <- paste0((subset(CA_Rank, Rank == i)$CAName))
+  
+  #values
+  title1a <- paste0("Targeted Lung Health Checks Programme (TLHC)")
+  title1b <- paste0(title13a, " data pack for ", vWdate_format2, " including data up to ",vWdate_format)
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Title_Slide", master = "TLHC Theme") %>%
+    ph_with(value = title1a, location = ph_location_label(ph_label = "Pack_Title")) %>%
+    ph_with(value = title1b, location = ph_location_label(ph_label = "Pack_Date"))
+
+  
+#####Slide 2
+  #values
+  title2a <- paste0("Contents")
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_2", master = "TLHC Theme") %>%
+    ph_with(value = title2a, location = ph_location_label(ph_label = "Slide2_Title"))
+
+  
+#####Slide 3
+  #values
+  title3a <- paste0("Aims & purpose of this pack")
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_3", master = "TLHC Theme") %>%
+    ph_with(value = title3a, location = ph_location_label(ph_label = "Slide3_Title")) 
+
+#####slide 4
+  #data
+  Data1_Dictionary <- read.csv("Date_Dictionary.csv")
+  Data_Dictionary <- Data1_Dictionary %>%
+    mutate(Term = str_replace_all(Term, "LATEST DATA SUBMISSION MONTH", as.character(vWdate_format)))
+  #formatting
+  Data_Dictionary_format <-flextable(Data_Dictionary)
+  #Bold header
+  Data_Dictionary_format <- bold(Data_Dictionary_format, i = 1, j = NULL, bold = TRUE, part = "header")
+  #Align the text 
+  Data_Dictionary_format <- align(Data_Dictionary_format, i = NULL, j = 1:3, align = "left", part = "all")
+  #Font
+  Data_Dictionary_format <- font(Data_Dictionary_format, fontname = "Arial", part = "all")
+  Data_Dictionary_format <- fontsize(Data_Dictionary_format, size = 8, part = "body")
+  Data_Dictionary_format <- fontsize(Data_Dictionary_format, size = 10, part = "header")
+  #Adjust column widths
+  Data_Dictionary_format <- width(Data_Dictionary_format, j = 1, width = 1.2, unit = "cm")
+  Data_Dictionary_format <- width(Data_Dictionary_format, j = 2, width = 11.5, unit = "cm")
+  Data_Dictionary_format <- width(Data_Dictionary_format, j = 3, width = 20.55, unit = "cm")
+  #fill headers
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 1, j = NULL, bg = "#4472C4", part = "header")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 2, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 4, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 6, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 8, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 10, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 12, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 14, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 16, j = NULL, bg = "#DAE3F3", part = "body")
+  Data_Dictionary_format <- bg(Data_Dictionary_format, i = 18, j = NULL, bg = "#DAE3F3", part = "body")
+  #Font color header change
+  Data_Dictionary_format <- color(Data_Dictionary_format, i = 1, j = NULL, color = "white", part = "header")
+  #Add gridlines
+  Data_Dictionary_format <- border_outer(Data_Dictionary_format)
+  Data_Dictionary_format <- border_inner_h(Data_Dictionary_format)
+  Data_Dictionary_format <- border_inner_v(Data_Dictionary_format)
+  #Change header labels
+  Data_Dictionary_format <- set_header_labels(Data_Dictionary_format,
+                                              ï..No. = "No.",
+                                              Term = "Term",
+                                              Description = "Description",
+                                              values = NULL)
+  #Print Table
+  print(Data_Dictionary_format)
+  #sources
+  title4a <- paste0("Data Dictionary")
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_4", master = "TLHC Theme") %>%
+    ph_with(value = title4a, location = ph_location_label(ph_label = "Slide4_Title")) %>%
+    ph_with(value = Data_Dictionary_format, location = ph_location_label(ph_label = "Dictionary_Table"))
+  
+#####Slide 5
+  #sources
+  title5a <- paste0("TLHC projects in the Cancer Alliance")
+  table5 <- start_dates.table(i)
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_5", master = "TLHC Theme") %>%
+    ph_with(value = title5a, location = ph_location_label(ph_label = "Slide5_Title")) %>%
+    ph_with(value = table5, location = ph_location_label(ph_label = "Slide5_Sites"))
+
+  
+#####Slide 6
+  #sources
+  title6a <- paste0("Data Quality Issues")
+  table6 <- comments.table(i)
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_6", master = "TLHC Theme") %>%
+    ph_with(value = title6a, location = ph_location_label(ph_label = "Slide6_Title"))
+  ##ph_with(value = table6, location = ph_location_label(ph_label = "Slide6_DQ"))
+  
+
+  #####Slide 7
+  #sources
+  title7a <- paste0("National programme data")
+  #title7b <- ftext(paste0("from programme start up until ", vWdate_format), properties)
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_7", master = "TLHC Theme") %>%
+    ph_with(value = title7a, location = ph_location_label(ph_label = "Slide7_Title")) %>%
+    #ph_with(value = fpar(title7b, fp_p = align), location = ph_location_label(ph_label = "Slide7_SubTitle")) %>%
+    ph_with(value = metrics_overall, location = ph_location_label(ph_label = "Slide7_Table")) %>%
+    ph_with(value = metrics_chart, location = ph_location_label(ph_label = "Slide7_Chart"))
+
+#####Slide 8
+  #data
+  total_cancers_table <- TLHC_Load_comb %>%
+    filter(Metric == "Total number of lung cancers diagnosed")
+  total_cancers <- sum(total_cancers_table$value2, na.rm = TRUE)
+  #sources
+  title8a <- paste0("National programme lung cancer diagnosis data to date")
+  title8b <- ftext(paste0("from programme start up until ", vWdate_format), properties)
+  title8c <- paste0(total_cancers, " Lung Cancers")
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_8", master = "TLHC Theme") %>%
+    ph_with(value = title8a, location = ph_location_label(ph_label = "Slide8_Title")) %>%
+    ph_with(value = fpar(title8b, fp_p = align), location = ph_location_label(ph_label = "Slide8_SubTitle")) %>%
+    ph_with(value = cancers_time, location = ph_location_label(ph_label = "Slide8_Chart")) %>%
+    ph_with(value = cancers_pie, location = ph_location_label(ph_label = "Slide8_Pie")) %>%
+    ph_with(value = title8c, location = ph_location_label(ph_label = "Slide8_Pie_Label"))
+  
+  
+#####Slide 9
+  #sources
+  title9a <- paste0("Total number of participants invited by each Cancer Alliance")
+  title9b <- ftext(paste0("22/23 year up until ", vWdate_format), properties)
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_9", master = "TLHC Theme") %>%
+    ph_with(value = title9a, location = ph_location_label(ph_label = "Slide9_Title")) %>%
+    ph_with(value = fpar(title9b, fp_p = align), location = ph_location_label(ph_label = "Slide9_SubTitle")) %>%
+    ph_with(value = invites_chart, location = ph_location_label(ph_label = "Slide9_Chart"))
+
+  
+####Slide 10
+  #sources
+  title10a <- paste0("Total number of LHCs attended by each Cancer Alliance")
+  title10b <- ftext(paste0("22/23 year up until ", vWdate_format), properties)
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_10", master = "TLHC Theme") %>%
+    ph_with(value = title10a, location = ph_location_label(ph_label = "Slide10_Title")) %>%
+    ph_with(value = fpar(title10b, fp_p = align), location = ph_location_label(ph_label = "Slide10_SubTitle")) %>%
+    ph_with(value = LHCs_chart, location = ph_location_label(ph_label = "Slide10_Chart"))
+  
+    
+#####Slide 11
+  #sources
+  title11a <- paste0("Total number of CT scans completed by each Cancer Alliance")
+  title11b <- ftext(paste0("22/23 year up until ", vWdate_format), properties)
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_11", master = "TLHC Theme") %>%
+    ph_with(value = title11a, location = ph_location_label(ph_label = "Slide11_Title")) %>%
+    ph_with(value = fpar(title11b, fp_p = align), location = ph_location_label(ph_label = "Slide11_SubTitle")) %>%
+    ph_with(value = scans_chart, location = ph_location_label(ph_label = "Slide11_Chart"))
+
+  
+  #####Slide 12
+  #sources
+  title12a <- paste0("Total number of lung cancers found by each Cancer Alliance to date")
+  title12b <- ftext(paste0("from programme start up until ", vWdate_format), properties)
+  plot12 <- rvg::dml(ggobj = site_stage.chart(i), bg = "transparent")
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_12", master = "TLHC Theme") %>%
+    ph_with(value = title12a, location = ph_location_label(ph_label = "Slide12_Title")) %>%
+    ph_with(value = fpar(title12b, fp_p = align), location = ph_location_label(ph_label = "Slide12_SubTitle")) %>%
+    ph_with(value = stage_alliance, location = ph_location_label(ph_label = "Slide12_AChart")) %>%
+    ph_with(value = plot12, location = ph_location_label(ph_label = "Slide12_SChart"))
+
+  
+    
+#####Slide 13
+  #sources
+  title13a <- paste0((subset(CA_Rank, Rank == i)$CAName))
+  table13 <- performance.table(i)
+  plot13a <- rvg::dml(ggobj = invites.chart(i), bg = "transparent")
+  plot13b <- rvg::dml(ggobj = LHCs.chart(i), bg = "transparent")
+  plot13c <- rvg::dml(ggobj = scans.chart(i), bg = "transparent")
+  #output
+  presentation <- template %>%
+    add_slide(layout = "Slide_13", master = "TLHC Theme") %>%
+    ph_with(value = title13a, location = ph_location_label(ph_label = "Slide13_Title")) %>%
+    ph_with(value = table13, location = ph_location_label(ph_label = "Slide13_Table")) %>%
+    ph_with(value = plot13a, location = ph_location_label(ph_label = "Slide13_IChart")) %>%
+    ph_with(value = plot13b, location = ph_location_label(ph_label = "Slide13_LChart")) %>%
+    ph_with(value = plot13c, location = ph_location_label(ph_label = "Slide13_SChart"))
+
+    
+    #print
+   print(presentation, target = paste0(dir_name_ca_pack, "/", subset(CA_Rank, Rank == i)$CAName, " CA_Pack.pptx"))
+  
+}  
+```
+
+
+
+###### print tables for reporting
+
+```{r invites}
+invites_2223_CA <- invites_2223 %>%
+  select(CAName, invites_2223) %>%
+  group_by(CAName) %>%
+  summarise(invites_total = sum(invites_2223, na.rm = TRUE))
+```
+
+```{r write csv files}
+write.csv(total_cancers_table, file = "cancers_check.csv")
+write.csv(TLHC_Load_comb, file = "2233data2.csv")
+write.csv(LHC_2223, file = "invites.csv")
+#write.csv(scan, file = "invites.csv")
+```
+
